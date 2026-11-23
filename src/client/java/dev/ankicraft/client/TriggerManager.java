@@ -74,7 +74,7 @@ public class TriggerManager {
         if (now - lastQuizMs < 15_000L) {
             return false;
         }
-        if (AnkiManager.getInstance().getQueuedCount() == 0) {
+        if (!AnkiManager.getInstance().isAnkiConnected()) {
             return false;
         }
         openQuiz(mc, cfg.gatekeepingEnabled, true, null);
