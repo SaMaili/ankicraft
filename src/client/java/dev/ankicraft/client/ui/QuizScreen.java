@@ -40,6 +40,8 @@ public class QuizScreen extends Screen {
     private boolean answerShown = false;
     private double scrollY = 0;
     private int contentHeight = 0;
+    private String undoBanner = "";
+    private long undoBannerUntilMs = 0L;
 
     private int cardX, cardY, cardW, cardH;
     private int viewTop, viewBottom, viewLeft, viewWidth;
@@ -212,6 +214,8 @@ public class QuizScreen extends Screen {
         this.currentCard = snap.card();
         this.answerShown = true;
         this.scrollY = 0;
+        this.undoBanner = "↺ Karte rückgängig gemacht";
+        this.undoBannerUntilMs = System.currentTimeMillis() + 2500L;
         this.questionBlocks = CardContentParser.parse(currentCard.questionHtml);
         String ansHtml = extractAnswerPortion(currentCard.answerHtml);
         this.answerBlocks = CardContentParser.parse(ansHtml);
@@ -238,7 +242,7 @@ public class QuizScreen extends Screen {
     @Override
     public boolean keyPressed(KeyEvent event) {
         int key = event.key();
-        if (event.hasControlDown() && key == InputConstants.KEY_Z) {
+        if (event.hasControlDown() && (key == InputConstants.KEY_Z || key == InputConstants.KEY_Y)) {
             undoLastCard();
             return true;
         }
@@ -252,9 +256,9 @@ public class QuizScreen extends Screen {
                 return true;
             }
             if (answerShown) {
+                if (key == InputConstants.KEY_SPACE || key == InputConstants.KEY_3 || key == InputConstants.KEY_NUMPAD3) { rateCard(3); return true; }
                 if (key == InputConstants.KEY_1 || key == InputConstants.KEY_NUMPAD1) { rateCard(1); return true; }
                 if (key == InputConstants.KEY_2 || key == InputConstants.KEY_NUMPAD2) { rateCard(2); return true; }
-                if (key == InputConstants.KEY_3 || key == InputConstants.KEY_NUMPAD3) { rateCard(3); return true; }
                 if (key == InputConstants.KEY_4 || key == InputConstants.KEY_NUMPAD4) { rateCard(4); return true; }
             }
         }
@@ -338,6 +342,13 @@ public class QuizScreen extends Screen {
 
         // Footer accent line
         gfx.fill(cardX + 1, cardY + cardH - 42, cardX + cardW - 1, cardY + cardH - 41, BORDER_COLOR);
+        if (!undoBanner.isEmpty() && System.currentTimeMillis() < undoBannerUntilMs) {
+            int bw = font.width(undoBanner) + 16;
+            int bx = cardX + (cardW - bw) / 2;
+            int by = cardY + cardH - 60;
+            gfx.fill(bx, by, bx + bw, by + 15, 0xDD0369A1);
+            gfx.centeredText(font, undoBanner, cardX + cardW / 2, by + 3, 0xFFF8FAFC);
+        }
         if (answerShown && currentCard != null) {
             int footerY = cardY + cardH - 34;
             int gap = 8;

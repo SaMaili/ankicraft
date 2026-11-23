@@ -236,7 +236,7 @@ public class DeckSelectScreen extends Screen {
     @Override
     public boolean keyPressed(KeyEvent event) {
         int key = event.key();
-        if (event.hasControlDown() && key == InputConstants.KEY_Z) {
+        if (event.hasControlDown() && (key == InputConstants.KEY_Z || key == InputConstants.KEY_Y)) {
             undoDeckSelection();
             return true;
         }
