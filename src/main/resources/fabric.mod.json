@@ -5,7 +5,7 @@
 	"name": "AnkiCraft",
 	"description": "Learn your Anki flashcards (with full LaTeX support) while playing Minecraft! Inspired by LinguaCraft.",
 	"authors": [
-		"Gabriel"
+		"SaMaili"
 	],
 	"license": "MIT",
 	"icon": "assets/ankicraft/icon.png",
