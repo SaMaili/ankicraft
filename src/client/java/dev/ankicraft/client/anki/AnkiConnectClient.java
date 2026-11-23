@@ -5,7 +5,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import dev.ankicraft.AnkiCraftMod;
 import dev.ankicraft.client.anki.AnkiModels.AnkiCard;
 import dev.ankicraft.client.anki.AnkiModels.AnkiDeck;
 import dev.ankicraft.client.config.AnkiCraftConfig;
@@ -17,6 +16,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -78,85 +78,82 @@ public class AnkiConnectClient {
         });
     }
 
-    public CompletableFuture<List<AnkiCard>> fetchDueCards(List<String> selectedDecks, int limit) {
-        StringBuilder query = new StringBuilder();
-        if (selectedDecks != null && !selectedDecks.isEmpty()) {
-            query.append("(");
-            for (int i = 0; i < selectedDecks.size(); i++) {
-                if (i > 0) query.append(" OR ");
-                String escaped = selectedDecks.get(i).replace("\"", "\\\"");
-                query.append("deck:\"").append(escaped).append("\"");
-            }
-            query.append(") ");
+    public record ScheduledCard(AnkiCard card, AnkiDeck studyDeck, String stateToken) {}
+
+    public CompletableFuture<ScheduledCard> fetchNextCard(List<AnkiDeck> studyDecks) {
+        CompletableFuture<ScheduledCard> next = CompletableFuture.completedFuture(null);
+        for (AnkiDeck deck : studyDecks) {
+            next = next.thenCompose(card -> card != null
+                    ? CompletableFuture.completedFuture(card)
+                    : selectStudyDeck(deck).thenCompose(v -> queueHead()).thenCompose(cardId -> {
+                        if (cardId == null) return CompletableFuture.completedFuture(null);
+                        return readScheduledCard(deck, cardId);
+                    }));
         }
-        query.append("(is:due OR is:new)");
+        return next;
+    }
 
-        JsonObject findParams = new JsonObject();
-        findParams.addProperty("query", query.toString());
+    private CompletableFuture<JsonElement> selectStudyDeck(AnkiDeck deck) {
+        JsonObject reference = new JsonObject();
+        reference.addProperty("id", Long.toString(deck.id));
+        JsonObject params = new JsonObject();
+        params.addProperty("view", "deckOverview");
+        params.add("deck", reference);
+        return invokeScheduler("application.navigate", params);
+    }
 
-        return invoke("findCards", findParams).thenCompose(idsEl -> {
-            if (idsEl == null || !idsEl.isJsonArray()) {
-                return CompletableFuture.completedFuture(List.of());
-            }
-            JsonArray allIds = idsEl.getAsJsonArray();
-            if (allIds.isEmpty()) {
-                return CompletableFuture.completedFuture(List.of());
-            }
-            JsonArray slice = new JsonArray();
-            int count = Math.min(limit, allIds.size());
-            for (int i = 0; i < count; i++) {
-                slice.add(allIds.get(i));
-            }
-            JsonObject infoParams = new JsonObject();
-            infoParams.add("cards", slice);
-
-            return invoke("cardsInfo", infoParams).thenApply(infoEl -> {
-                List<AnkiCard> cards = new ArrayList<>();
-                if (infoEl == null || !infoEl.isJsonArray()) return cards;
-
-                for (JsonElement el : infoEl.getAsJsonArray()) {
-                    if (!el.isJsonObject()) continue;
-                    JsonObject obj = el.getAsJsonObject();
-                    long cardId = obj.has("cardId") ? obj.get("cardId").getAsLong() : 0L;
-                    long noteId = obj.has("note") ? obj.get("note").getAsLong() : 0L;
-                    String deckName = obj.has("deckName") ? obj.get("deckName").getAsString() : "Default";
-                    String qHtml = obj.has("question") ? obj.get("question").getAsString() : "";
-                    String aHtml = obj.has("answer") ? obj.get("answer").getAsString() : "";
-
-                    List<String> nextReviews = new ArrayList<>();
-                    if (obj.has("nextReviews") && obj.get("nextReviews").isJsonArray()) {
-                        for (JsonElement nr : obj.getAsJsonArray("nextReviews")) {
-                            nextReviews.add(nr.getAsString());
-                        }
-                    }
-                    if (cardId != 0L) {
-                        cards.add(new AnkiCard(cardId, noteId, deckName, qHtml, aHtml, nextReviews));
-                    }
-                }
-                return cards;
-            });
+    private CompletableFuture<String> queueHead() {
+        JsonObject params = new JsonObject();
+        params.addProperty("fetchLimit", 1);
+        return invokeScheduler("scheduling.getQueue", params).thenApply(result -> {
+            JsonArray cards = result.getAsJsonObject().getAsJsonArray("cards");
+            return cards.isEmpty() ? null : cards.get(0).getAsJsonObject().get("cardId").getAsString();
         });
     }
 
-    public CompletableFuture<Boolean> answerCard(long cardId, int ease) {
-        JsonObject answerObj = new JsonObject();
-        answerObj.addProperty("cardId", cardId);
-        answerObj.addProperty("ease", ease);
+    private CompletableFuture<ScheduledCard> readScheduledCard(AnkiDeck studyDeck, String cardId) {
+        JsonArray ids = new JsonArray();
+        ids.add(Long.parseLong(cardId));
+        JsonObject infoParams = new JsonObject();
+        infoParams.add("cards", ids);
+        JsonObject predictionParams = new JsonObject();
+        predictionParams.addProperty("cardId", cardId);
+        return invokeScheduler("scheduling.predict", predictionParams).thenCompose(prediction ->
+                invoke("cardsInfo", infoParams).thenApply(info -> {
+                    JsonObject state = prediction.getAsJsonObject();
+                    JsonObject card = info.getAsJsonArray().get(0).getAsJsonObject();
+                    String deckName = card.get("deckName").getAsString();
+                    if (!deckName.equals(studyDeck.name) && !deckName.startsWith(studyDeck.name + "::")) {
+                        throw new IllegalStateException("Anki’s study deck changed while loading the card.");
+                    }
 
-        JsonArray answers = new JsonArray();
-        answers.add(answerObj);
+                    List<String> intervals = new ArrayList<>(Collections.nCopies(4, ""));
+                    for (JsonElement element : state.getAsJsonArray("answers")) {
+                        JsonObject answer = element.getAsJsonObject();
+                        int index = RATINGS.indexOf(answer.get("rating").getAsString());
+                        if (index >= 0) intervals.set(index, answer.get("label").getAsString());
+                    }
+                    AnkiCard rendered = new AnkiCard(Long.parseLong(cardId), card.get("note").getAsLong(),
+                            deckName, card.get("question").getAsString(), card.get("answer").getAsString(),
+                            intervals);
+                    return new ScheduledCard(rendered, studyDeck, state.get("stateToken").getAsString());
+                }));
+    }
 
-        JsonObject params = new JsonObject();
-        params.add("answers", answers);
+    private static final List<String> RATINGS = List.of("again", "hard", "good", "easy");
 
-        return invoke("answerCards", params).thenApply(res -> {
-            if (res != null && res.isJsonArray() && !res.getAsJsonArray().isEmpty()) {
-                return res.getAsJsonArray().get(0).getAsBoolean();
+    public CompletableFuture<Void> answerCard(ScheduledCard scheduled, int ease) {
+        String cardId = Long.toString(scheduled.card().cardId);
+        return selectStudyDeck(scheduled.studyDeck()).thenCompose(v -> queueHead()).thenCompose(currentId -> {
+            if (!cardId.equals(currentId)) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("Anki’s next scheduled card changed. Reload the quiz."));
             }
-            return false;
-        }).exceptionally(ex -> {
-            AnkiCraftMod.LOGGER.warn("Failed to submit answer for card {}", cardId, ex);
-            return false;
+            JsonObject params = new JsonObject();
+            params.addProperty("cardId", cardId);
+            params.addProperty("rating", RATINGS.get(ease - 1));
+            params.addProperty("stateToken", scheduled.stateToken());
+            return invokeScheduler("scheduling.answer", params).thenAccept(result -> {});
         });
     }
 
@@ -184,21 +181,39 @@ public class AnkiConnectClient {
             body.add("params", params);
         }
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(config.ankiConnectUrl))
+        return send(URI.create(config.ankiConnectUrl), body, false);
+    }
+
+    private CompletableFuture<JsonElement> invokeScheduler(String method, JsonObject params) {
+        JsonObject body = new JsonObject();
+        body.addProperty("jsonrpc", "2.0");
+        body.addProperty("id", 1);
+        body.addProperty("method", method);
+        body.add("params", params);
+        return send(URI.create(config.ankiConnectUrl).resolve("/api/v1"), body, true);
+    }
+
+    private CompletableFuture<JsonElement> send(URI uri, JsonObject body, boolean schedulerApi) {
+        HttpRequest.Builder request = HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofSeconds(5))
                 .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)))
-                .build();
+                .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)));
+        if (schedulerApi && config.ankiConnectApiKey != null && !config.ankiConnectApiKey.isBlank()) {
+            request.header("Authorization", "Bearer " + config.ankiConnectApiKey.trim());
+        }
 
-        return http.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+        return http.sendAsync(request.build(), HttpResponse.BodyHandlers.ofString())
                 .thenApply(resp -> {
                     if (resp.statusCode() != 200) {
-                        throw new RuntimeException("AnkiConnect HTTP " + resp.statusCode());
+                        throw new IllegalStateException("AnkiConnect HTTP " + resp.statusCode());
                     }
                     JsonObject json = JsonParser.parseString(resp.body()).getAsJsonObject();
-                    if (json.has("error") && !json.get("error").isJsonNull()) {
-                        throw new RuntimeException("AnkiConnect error: " + json.get("error").getAsString());
+                    JsonElement error = json.get("error");
+                    if (error != null && !error.isJsonNull()) {
+                        String message = error.isJsonObject()
+                                ? error.getAsJsonObject().get("message").getAsString()
+                                : error.getAsString();
+                        throw new IllegalStateException("AnkiConnect: " + message);
                     }
                     return json.get("result");
                 });

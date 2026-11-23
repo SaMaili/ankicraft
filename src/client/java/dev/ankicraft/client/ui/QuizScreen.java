@@ -1,6 +1,8 @@
 package dev.ankicraft.client.ui;
 
+import dev.ankicraft.AnkiCraftMod;
 import dev.ankicraft.client.AnkiManager;
+import dev.ankicraft.client.anki.AnkiConnectClient.ScheduledCard;
 import dev.ankicraft.client.anki.AnkiModels.AnkiCard;
 import dev.ankicraft.client.config.AnkiCraftConfig;
 import dev.ankicraft.client.render.CardContentParser;
@@ -13,8 +15,6 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.network.chat.Component;
 
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.List;
 
 public class QuizScreen extends Screen {
@@ -27,21 +27,23 @@ public class QuizScreen extends Screen {
     private static final int ACCENT_ROSE = 0xFFF43F5E;
     private static final int TEXT_MUTED = 0xFF94A3B8;
 
-    private record UndoSnapshot(AnkiCard card, int prevStreak, int prevReviewedToday) {}
-
     private final AnkiManager manager;
     private final boolean gatekeeping;
     private final Runnable onGatekeepPassed;
-    private final Deque<UndoSnapshot> undoStack = new ArrayDeque<>();
 
+    private ScheduledCard scheduledCard;
     private AnkiCard currentCard;
+    private boolean started;
+    private boolean busy;
+    private boolean refreshRequested;
+    private String status = "";
     private List<ContentBlock> questionBlocks = List.of();
     private List<ContentBlock> answerBlocks = List.of();
     private boolean answerShown = false;
     private double scrollY = 0;
     private int contentHeight = 0;
-    private String undoBanner = "";
-    private long undoBannerUntilMs = 0L;
+    private String feedback = "";
+    private long feedbackUntilMs = 0L;
 
     private int cardX, cardY, cardW, cardH;
     private int viewTop, viewBottom, viewLeft, viewWidth;
@@ -51,16 +53,43 @@ public class QuizScreen extends Screen {
         this.manager = AnkiManager.getInstance();
         this.gatekeeping = gatekeeping;
         this.onGatekeepPassed = onGatekeepPassed;
-        loadNextCard();
     }
 
     public void reloadAfterDeckChange() {
-        loadNextCard();
-        init();
+        if (busy) {
+            refreshRequested = true;
+        } else {
+            loadNextCard();
+        }
     }
 
     private void loadNextCard() {
-        this.currentCard = manager.pollNextCard();
+        if (busy) return;
+        started = true;
+        busy = true;
+        refreshRequested = false;
+        status = "";
+        showCard(null);
+        init();
+        manager.fetchNextCard().whenComplete((next, error) -> minecraft.execute(() -> {
+            busy = false;
+            if (refreshRequested) {
+                loadNextCard();
+                return;
+            }
+            if (error == null) {
+                showCard(next);
+            } else {
+                AnkiCraftMod.LOGGER.warn("Could not load the next Anki card", error);
+                status = "Karten konnten nicht geladen werden. Prüfe AnkiConnect.";
+            }
+            if (minecraft.gui.screen() == this) init();
+        }));
+    }
+
+    private void showCard(ScheduledCard next) {
+        this.scheduledCard = next;
+        this.currentCard = next == null ? null : next.card();
         this.answerShown = false;
         this.scrollY = 0;
         if (currentCard != null) {
@@ -93,6 +122,10 @@ public class QuizScreen extends Screen {
     @Override
     protected void init() {
         super.init();
+        if (!started) {
+            loadNextCard();
+            return;
+        }
         clearWidgets();
 
         this.cardW = Math.min(580, this.width - 24);
@@ -120,15 +153,11 @@ public class QuizScreen extends Screen {
                     .bounds(cardX + cardW - 34, topBtnY, 24, 20).build());
         }
 
+        if (busy) return;
         int footerY = cardY + cardH - 34;
         if (currentCard == null) {
-            addRenderableWidget(Button.builder(Component.literal("Mit Anki syncen"), btn -> {
-                btn.active = false;
-                manager.syncNow().thenRun(() -> this.minecraft.execute(() -> {
-                    loadNextCard();
-                    init();
-                }));
-            }).bounds(cardX + cardW / 2 - 110, footerY, 130, 22).build());
+            addRenderableWidget(Button.builder(Component.literal("Mit Anki syncen"), btn -> loadNextCard())
+                    .bounds(cardX + cardW / 2 - 110, footerY, 130, 22).build());
 
             addRenderableWidget(Button.builder(Component.literal("Schließen"), btn -> onClose())
                     .bounds(cardX + cardW / 2 + 28, footerY, 84, 22).build());
@@ -186,43 +215,34 @@ public class QuizScreen extends Screen {
     }
 
     private void rateCard(int ease) {
-        if (currentCard == null) return;
-        AnkiCard rated = currentCard;
-        undoStack.push(new UndoSnapshot(rated, manager.getStreak(), manager.getReviewedToday()));
-        manager.submitAnswer(rated, ease);
-
-        if (gatekeeping && ease >= 3) {
-            if (onGatekeepPassed != null) {
-                onGatekeepPassed.run();
-            }
-            onClose();
-            return;
-        }
-
-        // Keep quizzing continuously until the user closes with K / Esc / X
-        loadNextCard();
+        if (scheduledCard == null || busy) return;
+        busy = true;
         init();
+        manager.submitAnswer(scheduledCard, ease).whenComplete((result, error) -> minecraft.execute(() -> {
+            busy = false;
+            if (error == null) {
+                manager.recordAcceptedAnswer(ease);
+            } else {
+                AnkiCraftMod.LOGGER.warn("Anki did not confirm the rating", error);
+                showFeedback("Anki hat die Bewertung nicht bestätigt.");
+            }
+            if (minecraft.gui.screen() != this) {
+                // Refresh next time this screen is opened, including after a settings change.
+                started = false;
+                return;
+            }
+            if (error == null && gatekeeping && ease >= 3) {
+                if (onGatekeepPassed != null) onGatekeepPassed.run();
+                onClose();
+                return;
+            }
+            loadNextCard();
+        }));
     }
 
-    private void undoLastCard() {
-        if (undoStack.isEmpty()) return;
-        UndoSnapshot snap = undoStack.pop();
-        if (currentCard != null) {
-            manager.pushCardToFront(currentCard);
-        }
-        manager.undoLastReview(snap.card(), snap.prevStreak(), snap.prevReviewedToday());
-        this.currentCard = snap.card();
-        this.answerShown = true;
-        this.scrollY = 0;
-        this.undoBanner = "↺ Karte rückgängig gemacht";
-        this.undoBannerUntilMs = System.currentTimeMillis() + 2500L;
-        this.questionBlocks = CardContentParser.parse(currentCard.questionHtml);
-        String ansHtml = extractAnswerPortion(currentCard.answerHtml);
-        this.answerBlocks = CardContentParser.parse(ansHtml);
-        if (this.answerBlocks.isEmpty() && currentCard.answerHtml != null) {
-            this.answerBlocks = CardContentParser.parse(currentCard.answerHtml);
-        }
-        init();
+    private void showFeedback(String message) {
+        feedback = message;
+        feedbackUntilMs = System.currentTimeMillis() + 3000L;
     }
 
     private boolean isGatekeepActive() {
@@ -243,14 +263,14 @@ public class QuizScreen extends Screen {
     public boolean keyPressed(KeyEvent event) {
         int key = event.key();
         if (event.hasControlDown() && (key == InputConstants.KEY_Z || key == InputConstants.KEY_Y)) {
-            undoLastCard();
+            showFeedback("Bewertungen können in Anki rückgängig gemacht werden.");
             return true;
         }
         if (key == InputConstants.KEY_K && !isGatekeepActive()) {
             onClose();
             return true;
         }
-        if (currentCard != null) {
+        if (!busy && currentCard != null) {
             if (!answerShown && (key == InputConstants.KEY_SPACE || key == InputConstants.KEY_RETURN || key == InputConstants.KEY_NUMPADENTER)) {
                 revealAnswer();
                 return true;
@@ -304,11 +324,13 @@ public class QuizScreen extends Screen {
 
         // Content area
         if (currentCard == null) {
-            gfx.centeredText(font, "Keine fälligen Karten im ausgewählten Deck!", cardX + cardW / 2, cardY + cardH / 2 - 18, 0xFFF8FAFC);
-            String hint = manager.isAnkiConnected()
+            String message = busy ? "Lade nächste Karte …"
+                    : status.isEmpty() ? "Keine geplanten Karten in den ausgewählten Decks." : status;
+            gfx.centeredText(font, message, cardX + cardW / 2, cardY + cardH / 2 - 18, 0xFFF8FAFC);
+            String hint = status.isEmpty()
                     ? "Wähle ein anderes Deck oder synchronisiere erneut."
-                    : "Starte Anki Desktop (mit AnkiConnect) und klicke auf Sync.";
-            gfx.centeredText(font, hint, cardX + cardW / 2, cardY + cardH / 2 - 2, TEXT_MUTED);
+                    : "Lass Anki Desktop mit aktuellem AnkiConnect geöffnet.";
+            if (!busy) gfx.centeredText(font, hint, cardX + cardW / 2, cardY + cardH / 2 - 2, TEXT_MUTED);
         } else {
             AnkiCraftConfig cfg = manager.getConfig();
             CardContentRenderer renderer = manager.getContentRenderer();
@@ -342,12 +364,12 @@ public class QuizScreen extends Screen {
 
         // Footer accent line
         gfx.fill(cardX + 1, cardY + cardH - 42, cardX + cardW - 1, cardY + cardH - 41, BORDER_COLOR);
-        if (!undoBanner.isEmpty() && System.currentTimeMillis() < undoBannerUntilMs) {
-            int bw = font.width(undoBanner) + 16;
+        if (!feedback.isEmpty() && System.currentTimeMillis() < feedbackUntilMs) {
+            int bw = font.width(feedback) + 16;
             int bx = cardX + (cardW - bw) / 2;
             int by = cardY + cardH - 60;
             gfx.fill(bx, by, bx + bw, by + 15, 0xDD0369A1);
-            gfx.centeredText(font, undoBanner, cardX + cardW / 2, by + 3, 0xFFF8FAFC);
+            gfx.centeredText(font, feedback, cardX + cardW / 2, by + 3, 0xFFF8FAFC);
         }
         if (answerShown && currentCard != null) {
             int footerY = cardY + cardH - 34;
