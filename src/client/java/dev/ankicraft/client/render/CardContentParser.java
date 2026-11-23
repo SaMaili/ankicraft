@@ -35,6 +35,10 @@ public final class CardContentParser {
     public record DividerBlock() implements ContentBlock {}
 
     private static final Pattern STYLE_SCRIPT_PATTERN = Pattern.compile("(?is)<(style|script)[^>]*>.*?</\\1>");
+    private static final Pattern SCRIPT_BLOCK_PATTERN = Pattern.compile("(?is)<script[^>]*>(.*?)</script>");
+    private static final Pattern INNER_HTML_ASSIGN_PATTERN = Pattern.compile(
+            "\\.innerHTML\\s*=\\s*(?:\"((?:[^\"\\\\]|\\\\.)*)\"|'((?:[^'\\\\]|\\\\.)*)')"
+    );
     private static final Pattern SOUND_PATTERN = Pattern.compile("(?i)\\[sound:[^\\]]+\\]");
     private static final Pattern RUBY_INNER_PAIR = Pattern.compile("(?is)(.*?)<rt[^>]*>(.*?)</rt>");
     private static final Pattern BLOCK_TOKEN_PATTERN = Pattern.compile(
@@ -67,7 +71,8 @@ public final class CardContentParser {
             return blocks;
         }
 
-        String cleaned = STYLE_SCRIPT_PATTERN.matcher(html).replaceAll("");
+        String withScriptContent = injectScriptInnerHtml(html);
+        String cleaned = STYLE_SCRIPT_PATTERN.matcher(withScriptContent).replaceAll("");
         cleaned = SOUND_PATTERN.matcher(cleaned).replaceAll("");
         cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n");
 
@@ -196,6 +201,35 @@ public final class CardContentParser {
                 spans.add(new InlineSpan(SpanType.TEXT, tail));
             }
         }
+    }
+
+    private static String injectScriptInnerHtml(String html) {
+        Matcher sm = SCRIPT_BLOCK_PATTERN.matcher(html);
+        StringBuilder injected = new StringBuilder();
+        while (sm.find()) {
+            Matcher im = INNER_HTML_ASSIGN_PATTERN.matcher(sm.group(1));
+            while (im.find()) {
+                String raw = im.group(1) != null ? im.group(1) : im.group(2);
+                if (raw != null && !raw.isBlank()) {
+                    String unescaped = raw.replace("\\\"", "\"")
+                            .replace("\\'", "'")
+                            .replace("\\/", "/")
+                            .replace("\\n", "\n")
+                            .replace("\\r", "")
+                            .replace("\\t", " ")
+                            .replace("\\\\", "\\");
+                    injected.append(unescaped).append("\n");
+                }
+            }
+        }
+        if (injected.isEmpty()) {
+            return html;
+        }
+        String linkContainerRegex = "(?is)<div[^>]*id\\s*=\\s*[\"']?link-container[\"']?[^>]*>\\s*</div>";
+        if (Pattern.compile(linkContainerRegex).matcher(html).find()) {
+            return html.replaceFirst(linkContainerRegex, Matcher.quoteReplacement(injected.toString()));
+        }
+        return injected + "\n" + html;
     }
 
     private static String normalizeImageSrc(String raw) {
