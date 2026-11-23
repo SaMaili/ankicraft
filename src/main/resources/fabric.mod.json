@@ -1,0 +1,27 @@
+{
+	"schemaVersion": 1,
+	"id": "ankicraft",
+	"version": "${version}",
+	"name": "AnkiCraft",
+	"description": "Learn your Anki flashcards (with full LaTeX support) while playing Minecraft! Inspired by LinguaCraft.",
+	"authors": [
+		"Gabriel"
+	],
+	"license": "MIT",
+	"icon": "assets/ankicraft/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"dev.ankicraft.AnkiCraftMod"
+		],
+		"client": [
+			"dev.ankicraft.client.AnkiCraftClient"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
