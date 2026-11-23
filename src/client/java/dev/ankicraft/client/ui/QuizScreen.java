@@ -4,6 +4,7 @@ import dev.ankicraft.AnkiCraftMod;
 import dev.ankicraft.client.AnkiManager;
 import dev.ankicraft.client.anki.AnkiConnectClient.ScheduledCard;
 import dev.ankicraft.client.anki.AnkiModels.AnkiCard;
+import dev.ankicraft.client.anki.AnkiModels.AnkiDeck;
 import dev.ankicraft.client.config.AnkiCraftConfig;
 import dev.ankicraft.client.render.CardContentParser;
 import dev.ankicraft.client.render.CardContentParser.ContentBlock;
@@ -64,6 +65,10 @@ public class QuizScreen extends Screen {
     }
 
     private void loadNextCard() {
+        loadNextCard(null);
+    }
+
+    private void loadNextCard(AnkiDeck currentStudyDeck) {
         if (busy) return;
         started = true;
         busy = true;
@@ -71,7 +76,7 @@ public class QuizScreen extends Screen {
         status = "";
         showCard(null);
         init();
-        manager.fetchNextCard().whenComplete((next, error) -> minecraft.execute(() -> {
+        manager.fetchNextCard(currentStudyDeck).whenComplete((next, error) -> minecraft.execute(() -> {
             busy = false;
             if (refreshRequested) {
                 loadNextCard();
@@ -236,7 +241,7 @@ public class QuizScreen extends Screen {
                 onClose();
                 return;
             }
-            loadNextCard();
+            loadNextCard(error == null && !refreshRequested ? scheduledCard.studyDeck() : null);
         }));
     }
 

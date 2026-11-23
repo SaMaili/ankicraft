@@ -16,7 +16,6 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +24,7 @@ import java.util.concurrent.CompletableFuture;
 public class AnkiConnectClient {
     private static final Gson GSON = new Gson();
     private final HttpClient http = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
             .connectTimeout(Duration.ofSeconds(2))
             .build();
     private final AnkiCraftConfig config;
@@ -78,19 +78,25 @@ public class AnkiConnectClient {
         });
     }
 
-    public record ScheduledCard(AnkiCard card, AnkiDeck studyDeck, String stateToken) {}
+    public record ScheduledCard(AnkiCard card, AnkiDeck studyDeck) {}
 
-    public CompletableFuture<ScheduledCard> fetchNextCard(List<AnkiDeck> studyDecks) {
-        CompletableFuture<ScheduledCard> next = CompletableFuture.completedFuture(null);
+    public CompletableFuture<ScheduledCard> fetchNextCard(List<AnkiDeck> studyDecks, AnkiDeck currentStudyDeck) {
+        CompletableFuture<ScheduledCard> next = currentStudyDeck == null
+                ? CompletableFuture.completedFuture(null)
+                : readQueueHead(currentStudyDeck);
         for (AnkiDeck deck : studyDecks) {
+            if (currentStudyDeck != null && deck.id == currentStudyDeck.id) continue;
             next = next.thenCompose(card -> card != null
                     ? CompletableFuture.completedFuture(card)
-                    : selectStudyDeck(deck).thenCompose(v -> queueHead()).thenCompose(cardId -> {
-                        if (cardId == null) return CompletableFuture.completedFuture(null);
-                        return readScheduledCard(deck, cardId);
-                    }));
+                    : selectStudyDeck(deck).thenCompose(v -> readQueueHead(deck)));
         }
         return next;
+    }
+
+    private CompletableFuture<ScheduledCard> readQueueHead(AnkiDeck deck) {
+        return queueHead().thenCompose(cardId -> cardId == null
+                ? CompletableFuture.completedFuture(null)
+                : renderCard(deck, cardId));
     }
 
     private CompletableFuture<JsonElement> selectStudyDeck(AnkiDeck deck) {
@@ -111,49 +117,49 @@ public class AnkiConnectClient {
         });
     }
 
-    private CompletableFuture<ScheduledCard> readScheduledCard(AnkiDeck studyDeck, String cardId) {
+    private CompletableFuture<ScheduledCard> renderCard(AnkiDeck studyDeck, String cardId) {
         JsonArray ids = new JsonArray();
         ids.add(Long.parseLong(cardId));
-        JsonObject infoParams = new JsonObject();
-        infoParams.add("cards", ids);
-        JsonObject predictionParams = new JsonObject();
-        predictionParams.addProperty("cardId", cardId);
-        return invokeScheduler("scheduling.predict", predictionParams).thenCompose(prediction ->
-                invoke("cardsInfo", infoParams).thenApply(info -> {
-                    JsonObject state = prediction.getAsJsonObject();
-                    JsonObject card = info.getAsJsonArray().get(0).getAsJsonObject();
-                    String deckName = card.get("deckName").getAsString();
-                    if (!deckName.equals(studyDeck.name) && !deckName.startsWith(studyDeck.name + "::")) {
-                        throw new IllegalStateException("Anki’s study deck changed while loading the card.");
-                    }
+        JsonObject params = new JsonObject();
+        params.add("cards", ids);
+        return invoke("cardsInfo", params).thenApply(info -> {
+            JsonObject card = info.getAsJsonArray().get(0).getAsJsonObject();
+            String deckName = card.get("deckName").getAsString();
+            if (!deckName.equals(studyDeck.name) && !deckName.startsWith(studyDeck.name + "::")) {
+                throw new IllegalStateException("Anki’s study deck changed. Reload the quiz.");
+            }
 
-                    List<String> intervals = new ArrayList<>(Collections.nCopies(4, ""));
-                    for (JsonElement element : state.getAsJsonArray("answers")) {
-                        JsonObject answer = element.getAsJsonObject();
-                        int index = RATINGS.indexOf(answer.get("rating").getAsString());
-                        if (index >= 0) intervals.set(index, answer.get("label").getAsString());
-                    }
-                    AnkiCard rendered = new AnkiCard(Long.parseLong(cardId), card.get("note").getAsLong(),
-                            deckName, card.get("question").getAsString(), card.get("answer").getAsString(),
-                            intervals);
-                    return new ScheduledCard(rendered, studyDeck, state.get("stateToken").getAsString());
-                }));
+            List<String> intervals = new ArrayList<>();
+            for (JsonElement interval : card.getAsJsonArray("nextReviews")) {
+                intervals.add(interval.getAsString());
+            }
+            AnkiCard rendered = new AnkiCard(Long.parseLong(cardId), card.get("note").getAsLong(),
+                    deckName, card.get("question").getAsString(), card.get("answer").getAsString(), intervals);
+            return new ScheduledCard(rendered, studyDeck);
+        });
     }
 
-    private static final List<String> RATINGS = List.of("again", "hard", "good", "easy");
-
     public CompletableFuture<Void> answerCard(ScheduledCard scheduled, int ease) {
-        String cardId = Long.toString(scheduled.card().cardId);
-        return selectStudyDeck(scheduled.studyDeck()).thenCompose(v -> queueHead()).thenCompose(currentId -> {
-            if (!cardId.equals(currentId)) {
+        long cardId = scheduled.card().cardId;
+        return queueHead().thenCompose(currentId -> {
+            if (!Long.toString(cardId).equals(currentId)) {
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("Anki’s next scheduled card changed. Reload the quiz."));
             }
+
+            // AnkiConnect computes and submits the scheduling states within one call.
+            JsonObject answer = new JsonObject();
+            answer.addProperty("cardId", cardId);
+            answer.addProperty("ease", ease);
+            JsonArray answers = new JsonArray();
+            answers.add(answer);
             JsonObject params = new JsonObject();
-            params.addProperty("cardId", cardId);
-            params.addProperty("rating", RATINGS.get(ease - 1));
-            params.addProperty("stateToken", scheduled.stateToken());
-            return invokeScheduler("scheduling.answer", params).thenAccept(result -> {});
+            params.add("answers", answers);
+            return invoke("answerCards", params).thenAccept(result -> {
+                if (!result.getAsJsonArray().get(0).getAsBoolean()) {
+                    throw new IllegalStateException("Anki did not accept the rating.");
+                }
+            });
         });
     }
 

@@ -114,7 +114,7 @@ public class AnkiManager {
         return deckSync;
     }
 
-    public CompletableFuture<ScheduledCard> fetchNextCard() {
+    public CompletableFuture<ScheduledCard> fetchNextCard(AnkiDeck currentStudyDeck) {
         List<String> selected = List.copyOf(config.selectedDecks);
         return runSchedulerOperation(() -> {
             CompletableFuture<Boolean> ready = decks.isEmpty()
@@ -123,7 +123,7 @@ public class AnkiManager {
                 if (!connected) {
                     return CompletableFuture.failedFuture(new IllegalStateException("AnkiConnect is unavailable."));
                 }
-                return ankiClient.fetchNextCard(studyDecks(decks, selected));
+                return ankiClient.fetchNextCard(studyDecks(decks, selected), currentStudyDeck);
             }).whenComplete((card, error) -> ankiConnected = error == null);
         });
     }
