@@ -1,60 +1,61 @@
 # AnkiCraft
 
-Eine **Minecraft Fabric Mod (MC 26.3)**, die sich live mit deinen **Anki-Decks** synchronisiert und dich beim Spielen abfragt – inspiriert von LinguaCraft, optimiert für **Informatik-, Mathe- und Sprach-Karten** (inklusive **LaTeX**, **Codeblöcken**, **Bildern** und **Furigana**).
+A **Minecraft Fabric mod (MC 26.3)** that syncs live with your **Anki decks** and quizzes you while you play — inspired by LinguaCraft, built for **computer science, math, and language flashcards** (including **LaTeX**, **code blocks**, **images**, and **Furigana**).
 
-Funktioniert sowohl im **Singleplayer**, auf **Mod-Servern** (mit XP- & Buff-Belohnungen) als auch als **reine Client-Mod auf fremden Vanilla-Servern**.
+Works in **Singleplayer**, on **modded servers** (with XP & potion buff rewards), and as a **client-side-only mod on third-party Vanilla servers**.
 
 ---
 
 ## Features
 
-- **Live-Sync mit Anki (via AnkiConnect):** Behält dein FSRS/SM-2-Scheduling exakt bei und speichert alle Bewertungen direkt zurück in Anki.
-- **Offline-Cache:** Einmal gesyncte Decks, Karten und Bilder werden lokal unter `config/ankicraft/` zwischengespeichert. Bewertungen werden beim nächsten Start von Anki automatisch nachsynchronisiert.
-- **LaTeX-Support (offline):** Rendert Inline- und Display-LaTeX (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`, `[latex]...[/latex]`, `\R`, `\N`, `\Z`, `\Q`, `\C`, `align` usw.) direkt über das gebündelte **JLaTeXMath**.
-- **Informatik- & Sprach-Karten:**
-  - Syntax-Boxen für `<pre>` / `<code>`
-  - Bilder (`PNG`, `JPG`, `GIF`, `WebP`, `data:image/...;base64`)
-  - Cloze-Lückentexte
-  - **Furigana** (`<ruby>...<rt>...</rt></ruby>` sowie `漢字[かな]`) direkt über den Kanji gerendert
-- **Deck-Auswahl im Spiel:** Durchsuchbare Deck-Liste mit Unterdecks, Mehrfachauswahl, Anzeige fälliger Karten sowie Maus- und Tastatursteuerung.
-- **Flexible Trigger & Gamification:**
-  - Konfigurierbarer Timer, Block-Abbau-Trigger und Bett-/Schlaf-Trigger
-  - Freiwilliges Lernen per Taste **`K`** (Endlos-Quiz bis zum erneuten `K`; resettet den Timer standardmäßig **nicht**)
-  - Optionale XP- & Potion-Belohnungen (Eile, Tempo, Regeneration), optionale Strafen und optionaler Gatekeeping-Modus
+- **Live Sync with Anki (via AnkiConnect):** Preserves your exact FSRS/SM-2 scheduling and writes all reviews straight back to Anki.
+- **Offline Cache:** Once synced, decks, cards, and media are cached locally in `config/ankicraft/`. Offline reviews are automatically synced back the next time Anki is running.
+- **Offline LaTeX Rendering:** Renders inline and display LaTeX (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`, `[latex]...[/latex]`, `\R`, `\N`, `\Z`, `\Q`, `\C`, `align`, etc.) directly via the bundled **JLaTeXMath** library.
+- **Rich Card Content:**
+  - Syntax-styled boxes for `<pre>` / `<code>` blocks
+  - Images (`PNG`, `JPG`, `GIF`, `WebP`, `data:image/...;base64`)
+  - Cloze deletions
+  - **Furigana** (`<ruby>...<rt>...</rt></ruby>` and `漢字[かな]`) rendered directly above Kanji, including JS-injected card templates
+- **In-Game Deck Selector:** Searchable, collapsible deck tree with multi-select, parent-to-subdeck cascade selection, due counts, and full mouse & keyboard navigation.
+- **Flexible Triggers & Gamification:**
+  - Configurable timer, block-break trigger, and bed/sleep trigger
+  - Voluntary study via **`K`** (continuous quiz until you press `K` again; does **not** reset your timer by default)
+  - Optional XP & potion buff rewards (Haste, Speed, Regeneration), optional penalties, and optional gatekeeping mode
 
 ---
 
-## Installation & Einrichtung
+## Installation & Setup
 
-### 1. Voraussetzungen
+### 1. Requirements
 - **Minecraft:** `26.3`
 - **Fabric Loader:** `>= 0.20.1`
-- **Fabric API:** `0.165.2+26.3` (oder neuer für `26.3`)
+- **Fabric API:** `0.165.2+26.3` (or newer for `26.3`)
 - **Java:** `25`
-- **Anki Desktop** mit dem Add-on **AnkiConnect**:
-  1. In Anki: `Extras` → `Erweiterungen` → `Erweiterungen herunterladen...`
-  2. Code **`2055492159`** eingeben und installieren.
-  3. **Anki Desktop einmal neu starten**, damit AnkiConnect auf `http://127.0.0.1:8765` startet.
+- **Anki Desktop** with the **AnkiConnect** add-on:
+  1. In Anki: `Tools` → `Add-ons` → `Get Add-ons...`
+  2. Enter code **`2055492159`** and install.
+  3. **Restart Anki Desktop once** so AnkiConnect starts listening on `http://127.0.0.1:8765`.
 
-### 2. Mod installieren
-1. Lade `ankicraft-1.0.0.jar` (oder baue sie selbst, siehe unten) in deinen `.minecraft/mods/`-Ordner (bzw. in PrismLauncher unter *Mods*).
-2. Starte Minecraft und stelle sicher, dass Anki Desktop im Hintergrund läuft.
+### 2. Install the Mod
+1. Place `ankicraft-1.0.0.jar` into your `.minecraft/mods/` folder (or PrismLauncher *Mods* tab).
+2. Launch Minecraft while Anki Desktop is running in the background.
 
 ---
 
-## Steuerung & Tastenbelegung
+## Controls & Keybindings
 
-| Taste | Aktion |
+| Key | Action |
 | :--- | :--- |
-| **`K`** | Quiz öffnen / schließen (Endlos-Modus bis erneut `K` oder `Esc`) |
-| **`J`** | Deck-Auswahl öffnen (Maus oder `↑`/`↓` + `Enter`/`Leertaste`) |
-| **`O`** | AnkiCraft-Einstellungen öffnen |
-| **`Leertaste` / `Enter`** | Antwort aufdecken |
-| **`1` / `2` / `3` / `4`** | Karte bewerten: *Nochmal / Schwer / Gut / Einfach* |
+| **`K`** | Open / close quiz (continuous mode until `K` or `Esc`) |
+| **`J`** | Open deck selector (mouse, `↑`/`↓` to navigate, `←`/`→` to collapse/expand, `Enter`/`Space` to toggle) |
+| **`O`** | Open AnkiCraft settings |
+| **`Space` / `Enter`** | Reveal answer |
+| **`1` / `2` / `3` / `4`** | Rate card: *Again / Hard / Good / Easy* (`Space` also rates *Good*) |
+| **`Ctrl+Z` / `Ctrl+Y`** | Undo last card rating (or last deck selection change) |
 
 ---
 
-## Selbst bauen (Build from Source)
+## Build from Source
 
 ```bash
 git clone https://github.com/SaMaili/ankicraft.git
@@ -62,11 +63,11 @@ cd ankicraft
 ./gradlew build
 ```
 
-Die fertige Mod-JAR (inkl. JLaTeXMath & WebP-ImageIO) liegt danach unter:
+The compiled mod JAR (with JLaTeXMath and WebP-ImageIO bundled) will be located at:
 `build/libs/ankicraft-1.0.0.jar`
 
 ---
 
-## Lizenz
+## License
 
 MIT License
