@@ -13,6 +13,8 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.network.chat.Component;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 
 public class QuizScreen extends Screen {
@@ -25,9 +27,12 @@ public class QuizScreen extends Screen {
     private static final int ACCENT_ROSE = 0xFFF43F5E;
     private static final int TEXT_MUTED = 0xFF94A3B8;
 
+    private record UndoSnapshot(AnkiCard card, int prevStreak, int prevReviewedToday) {}
+
     private final AnkiManager manager;
     private final boolean gatekeeping;
     private final Runnable onGatekeepPassed;
+    private final Deque<UndoSnapshot> undoStack = new ArrayDeque<>();
 
     private AnkiCard currentCard;
     private List<ContentBlock> questionBlocks = List.of();
@@ -181,6 +186,7 @@ public class QuizScreen extends Screen {
     private void rateCard(int ease) {
         if (currentCard == null) return;
         AnkiCard rated = currentCard;
+        undoStack.push(new UndoSnapshot(rated, manager.getStreak(), manager.getReviewedToday()));
         manager.submitAnswer(rated, ease);
 
         if (gatekeeping && ease >= 3) {
@@ -193,6 +199,25 @@ public class QuizScreen extends Screen {
 
         // Keep quizzing continuously until the user closes with K / Esc / X
         loadNextCard();
+        init();
+    }
+
+    private void undoLastCard() {
+        if (undoStack.isEmpty()) return;
+        UndoSnapshot snap = undoStack.pop();
+        if (currentCard != null) {
+            manager.pushCardToFront(currentCard);
+        }
+        manager.undoLastReview(snap.card(), snap.prevStreak(), snap.prevReviewedToday());
+        this.currentCard = snap.card();
+        this.answerShown = true;
+        this.scrollY = 0;
+        this.questionBlocks = CardContentParser.parse(currentCard.questionHtml);
+        String ansHtml = extractAnswerPortion(currentCard.answerHtml);
+        this.answerBlocks = CardContentParser.parse(ansHtml);
+        if (this.answerBlocks.isEmpty() && currentCard.answerHtml != null) {
+            this.answerBlocks = CardContentParser.parse(currentCard.answerHtml);
+        }
         init();
     }
 
@@ -213,6 +238,10 @@ public class QuizScreen extends Screen {
     @Override
     public boolean keyPressed(KeyEvent event) {
         int key = event.key();
+        if (event.hasControlDown() && key == InputConstants.KEY_Z) {
+            undoLastCard();
+            return true;
+        }
         if (key == InputConstants.KEY_K && !isGatekeepActive()) {
             onClose();
             return true;

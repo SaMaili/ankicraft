@@ -190,6 +190,27 @@ public class AnkiManager {
         }
     }
 
+    public void pushCardToFront(AnkiCard card) {
+        if (card == null) return;
+        synchronized (cardQueue) {
+            cardQueue.addFirst(card);
+        }
+    }
+
+    public void undoLastReview(AnkiCard card, int previousStreak, int previousReviewedToday) {
+        this.streak = Math.max(0, previousStreak);
+        this.reviewedToday = Math.max(0, previousReviewedToday);
+        if (card != null) {
+            synchronized (cache) {
+                cache.pendingReviews.removeIf(pr -> pr.cardId == card.cardId);
+                if (cache.cards.stream().noneMatch(c -> c.cardId == card.cardId)) {
+                    cache.cards.add(card);
+                }
+                cache.save();
+            }
+        }
+    }
+
     public void submitAnswer(AnkiCard card, int ease) {
         if (card == null) return;
         reviewedToday++;
