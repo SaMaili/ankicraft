@@ -28,9 +28,11 @@ public class AnkiConnectClient {
     private static final Pattern FIELD_SOUND_PATTERN = Pattern.compile("(?i)\\[sound:([^\\]]+)\\]");
     private static final Gson GSON = new Gson();
     private final HttpClient http = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
             .connectTimeout(Duration.ofSeconds(2))
             .build();
     private final AnkiCraftConfig config;
+    private volatile Boolean schedulerApiSupported = null;
 
     public AnkiConnectClient(AnkiCraftConfig config) {
         this.config = config;
@@ -90,6 +92,86 @@ public class AnkiConnectClient {
         });
     }
 
+    public record ScheduledCard(AnkiCard card, AnkiDeck studyDeck) {}
+
+    public Boolean getSchedulerApiSupported() {
+        return schedulerApiSupported;
+    }
+
+    /**
+     * Queries AnkiConnect's /api/v1 scheduler API for the exact next card in Anki's
+     * native queue (respecting new-card limits, ordering, and sibling burying).
+     */
+    public CompletableFuture<ScheduledCard> fetchNextScheduledCard(List<AnkiDeck> studyDecks, AnkiDeck currentStudyDeck) {
+        if (Boolean.FALSE.equals(schedulerApiSupported)) {
+            return CompletableFuture.completedFuture(null);
+        }
+        CompletableFuture<ScheduledCard> next = currentStudyDeck == null
+                ? CompletableFuture.completedFuture(null)
+                : readQueueHead(currentStudyDeck);
+        for (AnkiDeck deck : studyDecks) {
+            if (currentStudyDeck != null && deck.id == currentStudyDeck.id) continue;
+            next = next.thenCompose(card -> card != null
+                    ? CompletableFuture.completedFuture(card)
+                    : selectStudyDeck(deck).thenCompose(v -> readQueueHead(deck)));
+        }
+        return next.thenApply(res -> {
+            schedulerApiSupported = Boolean.TRUE;
+            return res;
+        }).exceptionally(ex -> {
+            if (schedulerApiSupported == null) {
+                schedulerApiSupported = Boolean.FALSE;
+                AnkiCraftMod.LOGGER.info("AnkiConnect /api/v1 scheduler API not available, using standard findCards fallback.");
+            }
+            return null;
+        });
+    }
+
+    private CompletableFuture<ScheduledCard> readQueueHead(AnkiDeck deck) {
+        return queueHead().thenCompose(cardId -> cardId == null
+                ? CompletableFuture.completedFuture(null)
+                : renderScheduledCard(deck, cardId));
+    }
+
+    private CompletableFuture<JsonElement> selectStudyDeck(AnkiDeck deck) {
+        JsonObject reference = new JsonObject();
+        reference.addProperty("id", Long.toString(deck.id));
+        JsonObject params = new JsonObject();
+        params.addProperty("view", "deckOverview");
+        params.add("deck", reference);
+        return invokeScheduler("application.navigate", params);
+    }
+
+    private CompletableFuture<String> queueHead() {
+        JsonObject params = new JsonObject();
+        params.addProperty("fetchLimit", 1);
+        return invokeScheduler("scheduling.getQueue", params).thenApply(result -> {
+            JsonArray cards = result.getAsJsonObject().getAsJsonArray("cards");
+            return cards.isEmpty() ? null : cards.get(0).getAsJsonObject().get("cardId").getAsString();
+        });
+    }
+
+    private CompletableFuture<ScheduledCard> renderScheduledCard(AnkiDeck studyDeck, String cardId) {
+        JsonArray ids = new JsonArray();
+        ids.add(Long.parseLong(cardId));
+        JsonObject params = new JsonObject();
+        params.add("cards", ids);
+        return invoke("cardsInfo", params).thenApply(info -> {
+            if (info == null || !info.isJsonArray() || info.getAsJsonArray().isEmpty()) {
+                return null;
+            }
+            JsonObject obj = info.getAsJsonArray().get(0).getAsJsonObject();
+            AnkiCard parsed = parseCardObject(obj);
+            if (parsed == null) {
+                return null;
+            }
+            if (!parsed.deckName.equals(studyDeck.name) && !parsed.deckName.startsWith(studyDeck.name + "::")) {
+                return null;
+            }
+            return new ScheduledCard(parsed, studyDeck);
+        });
+    }
+
     public CompletableFuture<List<AnkiCard>> fetchDueCards(List<String> selectedDecks, int limit) {
         StringBuilder query = new StringBuilder();
         if (selectedDecks != null && !selectedDecks.isEmpty()) {
@@ -128,29 +210,36 @@ public class AnkiConnectClient {
 
                 for (JsonElement el : infoEl.getAsJsonArray()) {
                     if (!el.isJsonObject()) continue;
-                    JsonObject obj = el.getAsJsonObject();
-                    long cardId = obj.has("cardId") ? obj.get("cardId").getAsLong() : 0L;
-                    long noteId = obj.has("note") ? obj.get("note").getAsLong() : 0L;
-                    long deckId = obj.has("deckId") ? obj.get("deckId").getAsLong() : 0L;
-                    int cardType = obj.has("type") ? obj.get("type").getAsInt() : 2;
-                    String deckName = obj.has("deckName") ? obj.get("deckName").getAsString() : "Default";
-                    String qHtml = obj.has("question") ? obj.get("question").getAsString() : "";
-                    String aHtml = obj.has("answer") ? obj.get("answer").getAsString() : "";
-
-                    List<String> nextReviews = new ArrayList<>();
-                    if (obj.has("nextReviews") && obj.get("nextReviews").isJsonArray()) {
-                        for (JsonElement nr : obj.getAsJsonArray("nextReviews")) {
-                            nextReviews.add(nr.getAsString());
-                        }
-                    }
-                    List<String> soundFiles = extractSoundFiles(obj);
-                    if (cardId != 0L) {
-                        cards.add(new AnkiCard(cardId, noteId, deckId, cardType, deckName, qHtml, aHtml, nextReviews, soundFiles));
+                    AnkiCard card = parseCardObject(el.getAsJsonObject());
+                    if (card != null) {
+                        cards.add(card);
                     }
                 }
                 return cards;
             });
         });
+    }
+
+    private static AnkiCard parseCardObject(JsonObject obj) {
+        long cardId = obj.has("cardId") ? obj.get("cardId").getAsLong() : 0L;
+        if (cardId == 0L) {
+            return null;
+        }
+        long noteId = obj.has("note") ? obj.get("note").getAsLong() : 0L;
+        long deckId = obj.has("deckId") ? obj.get("deckId").getAsLong() : 0L;
+        int cardType = obj.has("type") ? obj.get("type").getAsInt() : 2;
+        String deckName = obj.has("deckName") ? obj.get("deckName").getAsString() : "Default";
+        String qHtml = obj.has("question") ? obj.get("question").getAsString() : "";
+        String aHtml = obj.has("answer") ? obj.get("answer").getAsString() : "";
+
+        List<String> nextReviews = new ArrayList<>();
+        if (obj.has("nextReviews") && obj.get("nextReviews").isJsonArray()) {
+            for (JsonElement nr : obj.getAsJsonArray("nextReviews")) {
+                nextReviews.add(nr.getAsString());
+            }
+        }
+        List<String> soundFiles = extractSoundFiles(obj);
+        return new AnkiCard(cardId, noteId, deckId, cardType, deckName, qHtml, aHtml, nextReviews, soundFiles);
     }
 
     public CompletableFuture<Boolean> answerCard(long cardId, int ease) {
@@ -202,22 +291,39 @@ public class AnkiConnectClient {
         if (params != null) {
             body.add("params", params);
         }
+        return send(URI.create(config.ankiConnectUrl), body, timeout, false);
+    }
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(config.ankiConnectUrl))
+    private CompletableFuture<JsonElement> invokeScheduler(String method, JsonObject params) {
+        JsonObject body = new JsonObject();
+        body.addProperty("jsonrpc", "2.0");
+        body.addProperty("id", 1);
+        body.addProperty("method", method);
+        body.add("params", params);
+        return send(URI.create(config.ankiConnectUrl).resolve("/api/v1"), body, Duration.ofSeconds(5), true);
+    }
+
+    private CompletableFuture<JsonElement> send(URI uri, JsonObject body, Duration timeout, boolean schedulerApi) {
+        HttpRequest.Builder request = HttpRequest.newBuilder(uri)
                 .timeout(timeout)
                 .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)))
-                .build();
+                .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)));
+        if (schedulerApi && config.ankiConnectApiKey != null && !config.ankiConnectApiKey.isBlank()) {
+            request.header("Authorization", "Bearer " + config.ankiConnectApiKey.trim());
+        }
 
-        return http.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+        return http.sendAsync(request.build(), HttpResponse.BodyHandlers.ofString())
                 .thenApply(resp -> {
                     if (resp.statusCode() != 200) {
                         throw new RuntimeException("AnkiConnect HTTP " + resp.statusCode());
                     }
                     JsonObject json = JsonParser.parseString(resp.body()).getAsJsonObject();
-                    if (json.has("error") && !json.get("error").isJsonNull()) {
-                        throw new RuntimeException("AnkiConnect error: " + json.get("error").getAsString());
+                    JsonElement error = json.get("error");
+                    if (error != null && !error.isJsonNull()) {
+                        String message = error.isJsonObject()
+                                ? error.getAsJsonObject().get("message").getAsString()
+                                : error.getAsString();
+                        throw new RuntimeException("AnkiConnect error: " + message);
                     }
                     return json.get("result");
                 });

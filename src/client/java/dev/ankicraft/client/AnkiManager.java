@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import dev.ankicraft.AnkiCraftMod;
 import dev.ankicraft.client.anki.AnkiConnectClient;
+import dev.ankicraft.client.anki.AnkiConnectClient.ScheduledCard;
 import dev.ankicraft.client.anki.AnkiModels.AnkiCard;
 import dev.ankicraft.client.anki.AnkiModels.AnkiDeck;
 import dev.ankicraft.client.anki.AnkiModels.PendingReview;
@@ -54,6 +55,7 @@ public class AnkiManager {
     private int reviewedToday = 0;
     private volatile long sleepCardsChallengeUntilMs = 0L;
     private volatile boolean learningActive = false;
+    private volatile AnkiDeck currentStudyDeck = null;
     private volatile String lastSleepCardsMessage = "";
     private volatile long lastSleepCardsMessageUntilMs = 0L;
 
@@ -165,24 +167,34 @@ public class AnkiManager {
                         cache.decks = new ArrayList<>(fetchedDecks);
                         return ankiClient.fetchDueCards(config.selectedDecks, 60);
                     })
-                    .thenApply(fetchedCards -> {
-                        for (AnkiCard card : fetchedCards) {
-                            if (card.deckId == 0L) {
-                                card.deckId = resolveDeckId(card.deckName);
-                            }
-                        }
-                        List<AnkiCard> shuffled = new ArrayList<>(fetchedCards);
-                        Collections.shuffle(shuffled);
-                        synchronized (cardQueue) {
-                            cardQueue.clear();
-                            cardQueue.addAll(shuffled);
-                        }
-                        cache.cards = new ArrayList<>(fetchedCards);
-                        cache.lastSyncMs = System.currentTimeMillis();
-                        cache.save();
-                        syncing = false;
-                        return true;
-                    })
+                    .thenCompose(fetchedCards -> ankiClient.fetchNextScheduledCard(getStudyDecks(), currentStudyDeck)
+                            .thenApply(scheduled -> {
+                                for (AnkiCard card : fetchedCards) {
+                                    if (card.deckId == 0L) {
+                                        card.deckId = resolveDeckId(card.deckName);
+                                    }
+                                }
+                                List<AnkiCard> shuffled = new ArrayList<>(fetchedCards);
+                                Collections.shuffle(shuffled);
+                                synchronized (cardQueue) {
+                                    cardQueue.clear();
+                                    if (scheduled != null && scheduled.card() != null) {
+                                        currentStudyDeck = scheduled.studyDeck();
+                                        AnkiCard head = scheduled.card();
+                                        if (head.deckId == 0L) {
+                                            head.deckId = resolveDeckId(head.deckName);
+                                        }
+                                        shuffled.removeIf(c -> c.cardId == head.cardId);
+                                        cardQueue.addFirst(head);
+                                    }
+                                    cardQueue.addAll(shuffled);
+                                }
+                                cache.cards = new ArrayList<>(fetchedCards);
+                                cache.lastSyncMs = System.currentTimeMillis();
+                                cache.save();
+                                syncing = false;
+                                return true;
+                            }))
                     .exceptionally(ex -> {
                         AnkiCraftMod.LOGGER.warn("AnkiCraft sync failed", ex);
                         syncing = false;
@@ -275,6 +287,20 @@ public class AnkiManager {
             ankiClient.answerCard(card.cardId, ease).thenAccept(ok -> {
                 if (!ok) {
                     queueOfflineReview(card.cardId, ease);
+                } else if (Boolean.TRUE.equals(ankiClient.getSchedulerApiSupported())) {
+                    ankiClient.fetchNextScheduledCard(getStudyDecks(), currentStudyDeck).thenAccept(scheduled -> {
+                        if (scheduled != null && scheduled.card() != null) {
+                            currentStudyDeck = scheduled.studyDeck();
+                            AnkiCard next = scheduled.card();
+                            if (next.deckId == 0L) {
+                                next.deckId = resolveDeckId(next.deckName);
+                            }
+                            synchronized (cardQueue) {
+                                cardQueue.removeIf(c -> c.cardId == next.cardId);
+                                cardQueue.addFirst(next);
+                            }
+                        }
+                    });
                 }
             });
         } else {
@@ -316,6 +342,24 @@ public class AnkiManager {
             cache.pendingReviews.add(new PendingReview(cardId, ease, System.currentTimeMillis()));
             cache.save();
         }
+    }
+
+    private List<AnkiDeck> getStudyDecks() {
+        List<AnkiDeck> result = new ArrayList<>();
+        if (config.selectedDecks.isEmpty()) {
+            for (AnkiDeck d : decks) {
+                if (!d.name.contains("::")) {
+                    result.add(d);
+                }
+            }
+            return result.isEmpty() ? new ArrayList<>(decks) : result;
+        }
+        for (AnkiDeck d : decks) {
+            if (config.selectedDecks.contains(d.name)) {
+                result.add(d);
+            }
+        }
+        return result;
     }
 
     private long resolveDeckId(String deckName) {
