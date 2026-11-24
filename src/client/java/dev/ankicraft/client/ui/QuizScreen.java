@@ -285,6 +285,10 @@ public class QuizScreen extends Screen {
     @Override
     public void onClose() {
         manager.getAudioPlayer().stop();
+        if (currentCard != null) {
+            manager.pushCardToFront(currentCard);
+            currentCard = null;
+        }
         manager.flushAndSaveBeforeClose();
         manager.reportLearningState(false);
         super.onClose();

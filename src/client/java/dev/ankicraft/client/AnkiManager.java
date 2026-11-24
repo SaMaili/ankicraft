@@ -445,9 +445,18 @@ public class AnkiManager {
         config.save();
         sleepCardsClient.wakeWorker();
         if (ankiConnected) {
-            flushPendingReviews().thenCompose(v -> config.autoSyncAnkiWeb
-                    ? ankiClient.syncAnkiWeb()
-                    : CompletableFuture.completedFuture(false));
+            flushPendingReviews()
+                    .thenCompose(v -> config.autoSyncAnkiWeb
+                            ? ankiClient.syncAnkiWeb()
+                            : CompletableFuture.completedFuture(false))
+                    .thenCompose(v -> ankiClient.fetchDecks())
+                    .thenAccept(fetchedDecks -> {
+                        if (fetchedDecks != null && !fetchedDecks.isEmpty()) {
+                            this.decks = new ArrayList<>(fetchedDecks);
+                            cache.decks = new ArrayList<>(fetchedDecks);
+                            cache.save();
+                        }
+                    });
         }
     }
 
