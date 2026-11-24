@@ -40,11 +40,15 @@ public class TriggerManager {
             return;
         }
 
+        if (manager.isLearningActive()) {
+            manager.reportLearningState(false);
+        }
+
         if (cfg.timerEnabled) {
             tickCounter++;
             if (tickCounter >= cfg.quizIntervalSeconds * 20) {
                 if (isSafeToQuiz(mc.player)) {
-                    openQuiz(mc, cfg.gatekeepingEnabled, true, null);
+                    openQuiz(mc, true, true, null);
                 } else {
                     // Retry in 5 seconds if player is currently hurt/busy
                     tickCounter -= 100;
@@ -61,7 +65,7 @@ public class TriggerManager {
         blocksBrokenSinceQuiz++;
         if (blocksBrokenSinceQuiz >= cfg.blocksPerQuiz) {
             blocksBrokenSinceQuiz = 0;
-            openQuiz(mc, cfg.gatekeepingEnabled, true, null);
+            openQuiz(mc, true, true, null);
         }
     }
 
@@ -77,8 +81,8 @@ public class TriggerManager {
         if (AnkiManager.getInstance().getQueuedCount() == 0) {
             return false;
         }
-        openQuiz(mc, cfg.gatekeepingEnabled, true, null);
-        return cfg.gatekeepingEnabled;
+        openQuiz(mc, true, true, null);
+        return true;
     }
 
     public void openManualQuiz(Minecraft mc) {

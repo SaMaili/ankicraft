@@ -10,7 +10,7 @@ import java.util.regex.Pattern;
 public final class CardContentParser {
     private CardContentParser() {}
 
-    public sealed interface ContentBlock permits ParagraphBlock, DisplayMathBlock, CodeBlock, ImageBlock, DividerBlock {}
+    public sealed interface ContentBlock permits ParagraphBlock, DisplayMathBlock, CodeBlock, ImageBlock, AudioBlock, DividerBlock {}
 
     public record InlineSpan(SpanType type, String content, String extra) {
         public InlineSpan(SpanType type, String content) {
@@ -32,6 +32,7 @@ public final class CardContentParser {
     public record DisplayMathBlock(String latex) implements ContentBlock {}
     public record CodeBlock(String code) implements ContentBlock {}
     public record ImageBlock(String filename) implements ContentBlock {}
+    public record AudioBlock(String filename) implements ContentBlock {}
     public record DividerBlock() implements ContentBlock {}
 
     private static final Pattern STYLE_SCRIPT_PATTERN = Pattern.compile("(?is)<(style|script)[^>]*>.*?</\\1>");
@@ -39,7 +40,6 @@ public final class CardContentParser {
     private static final Pattern INNER_HTML_ASSIGN_PATTERN = Pattern.compile(
             "\\.innerHTML\\s*=\\s*(?:\"((?:[^\"\\\\]|\\\\.)*)\"|'((?:[^'\\\\]|\\\\.)*)')"
     );
-    private static final Pattern SOUND_PATTERN = Pattern.compile("(?i)\\[sound:[^\\]]+\\]");
     private static final Pattern RUBY_INNER_PAIR = Pattern.compile("(?is)(.*?)<rt[^>]*>(.*?)</rt>");
     private static final Pattern BLOCK_TOKEN_PATTERN = Pattern.compile(
             "(?is)" +
@@ -48,7 +48,10 @@ public final class CardContentParser {
             "|(\\[\\$\\$\\](.+?)\\[/\\$\\$\\])" +
             "|(<pre[^>]*>(.*?)</pre>)" +
             "|(<img[^>]*?src\\s*=\\s*(?:[\"']([^\"']+)[\"']|([^\\s>]+))[^>]*>)" +
-            "|(<hr\\s*/?>)"
+            "|(<hr\\s*/?>)" +
+            "|(\\[sound:([^\\]]+)\\])" +
+            "|(<(?:audio|source)[^>]*?src\\s*=\\s*(?:[\"']([^\"']+)[\"']|([^\\s>]+))[^>]*>)" +
+            "|(\\[anki:play:([qa]):(\\d+)\\])"
     );
 
     private static final Pattern INLINE_PATTERN = Pattern.compile(
@@ -66,14 +69,18 @@ public final class CardContentParser {
     );
 
     public static List<ContentBlock> parse(String html) {
+        return parse(html, List.of());
+    }
+
+    public static List<ContentBlock> parse(String html, List<String> cardSounds) {
         List<ContentBlock> blocks = new ArrayList<>();
         if (html == null || html.isBlank()) {
             return blocks;
         }
+        List<String> sounds = cardSounds != null ? cardSounds : List.of();
 
         String withScriptContent = injectScriptInnerHtml(html);
         String cleaned = STYLE_SCRIPT_PATTERN.matcher(withScriptContent).replaceAll("");
-        cleaned = SOUND_PATTERN.matcher(cleaned).replaceAll("");
         cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n");
 
         Matcher m = BLOCK_TOKEN_PATTERN.matcher(cleaned);
@@ -96,6 +103,29 @@ public final class CardContentParser {
                 blocks.add(new ImageBlock(normalizeImageSrc(rawSrc)));
             } else if (m.group(12) != null) {
                 blocks.add(new DividerBlock());
+            } else if (m.group(14) != null) {
+                String soundFile = normalizeImageSrc(m.group(14).trim());
+                if (!soundFile.isEmpty()) {
+                    blocks.add(new AudioBlock(soundFile));
+                }
+            } else if (m.group(16) != null || m.group(17) != null) {
+                String rawSrc = m.group(16) != null ? m.group(16) : m.group(17);
+                String soundFile = normalizeImageSrc(rawSrc);
+                if (!soundFile.isEmpty()) {
+                    blocks.add(new AudioBlock(soundFile));
+                }
+            } else if (m.group(18) != null && m.group(20) != null) {
+                if (!sounds.isEmpty()) {
+                    int idx = 0;
+                    try {
+                        idx = Integer.parseInt(m.group(20));
+                    } catch (NumberFormatException ignored) {
+                    }
+                    if (idx < 0 || idx >= sounds.size()) {
+                        idx = 0;
+                    }
+                    blocks.add(new AudioBlock(sounds.get(idx)));
+                }
             }
             lastEnd = m.end();
         }

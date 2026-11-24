@@ -1,14 +1,20 @@
 package dev.ankicraft.client;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import dev.ankicraft.AnkiCraftMod;
 import dev.ankicraft.client.anki.AnkiConnectClient;
 import dev.ankicraft.client.anki.AnkiModels.AnkiCard;
 import dev.ankicraft.client.anki.AnkiModels.AnkiDeck;
 import dev.ankicraft.client.anki.AnkiModels.PendingReview;
 import dev.ankicraft.client.anki.CardCache;
+import dev.ankicraft.client.anki.SleepCardsClient;
 import dev.ankicraft.client.config.AnkiCraftConfig;
+import dev.ankicraft.client.render.AudioPlayer;
 import dev.ankicraft.client.render.CardContentRenderer;
 import dev.ankicraft.client.render.LatexRenderer;
+import dev.ankicraft.client.ui.QuizScreen;
 import dev.ankicraft.network.AnkiCraftNetwork.QuizResultPayload;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.ChatFormatting;
@@ -22,15 +28,20 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class AnkiManager {
+    private static final Pattern PROGRESS_PATTERN = Pattern.compile("(\\d+)\\s*/\\s*(\\d+)");
     private static AnkiManager instance;
 
     private final AnkiCraftConfig config;
     private final AnkiConnectClient ankiClient;
+    private final SleepCardsClient sleepCardsClient;
     private final CardCache cache;
     private final LatexRenderer latexRenderer;
     private final CardContentRenderer contentRenderer;
+    private final AudioPlayer audioPlayer;
 
     private final Deque<AnkiCard> cardQueue = new ArrayDeque<>();
     private List<AnkiDeck> decks = new ArrayList<>();
@@ -41,13 +52,24 @@ public class AnkiManager {
 
     private int streak = 0;
     private int reviewedToday = 0;
+    private volatile long sleepCardsChallengeUntilMs = 0L;
+    private volatile boolean learningActive = false;
+    private volatile String lastSleepCardsMessage = "";
+    private volatile long lastSleepCardsMessageUntilMs = 0L;
 
     public AnkiManager() {
         this.config = AnkiCraftConfig.load();
         this.ankiClient = new AnkiConnectClient(config);
+        this.sleepCardsClient = new SleepCardsClient(
+                config,
+                this::showSleepCardsMessage,
+                this::handleSleepCardsCommands,
+                this::handleSleepCardsReply
+        );
         this.cache = CardCache.load();
         this.latexRenderer = new LatexRenderer();
         this.contentRenderer = new CardContentRenderer(latexRenderer, ankiClient);
+        this.audioPlayer = new AudioPlayer(ankiClient);
 
         if (!cache.decks.isEmpty()) {
             this.decks = new ArrayList<>(cache.decks);
@@ -57,6 +79,8 @@ public class AnkiManager {
             Collections.shuffle(copy);
             cardQueue.addAll(copy);
         }
+
+        this.sleepCardsClient.start();
     }
 
     public static AnkiManager getInstance() {
@@ -70,8 +94,16 @@ public class AnkiManager {
         return config;
     }
 
+    public SleepCardsClient getSleepCardsClient() {
+        return sleepCardsClient;
+    }
+
     public CardContentRenderer getContentRenderer() {
         return contentRenderer;
+    }
+
+    public AudioPlayer getAudioPlayer() {
+        return audioPlayer;
     }
 
     public List<AnkiDeck> getDecks() {
@@ -124,6 +156,9 @@ public class AnkiManager {
             }
 
             return flushPendingReviews()
+                    .thenCompose(v -> config.autoSyncAnkiWeb
+                            ? ankiClient.syncAnkiWeb().thenApply(ok -> (Void) null)
+                            : CompletableFuture.completedFuture(null))
                     .thenCompose(v -> ankiClient.fetchDecks())
                     .thenCompose(fetchedDecks -> {
                         this.decks = new ArrayList<>(fetchedDecks);
@@ -131,6 +166,11 @@ public class AnkiManager {
                         return ankiClient.fetchDueCards(config.selectedDecks, 60);
                     })
                     .thenApply(fetchedCards -> {
+                        for (AnkiCard card : fetchedCards) {
+                            if (card.deckId == 0L) {
+                                card.deckId = resolveDeckId(card.deckName);
+                            }
+                        }
                         List<AnkiCard> shuffled = new ArrayList<>(fetchedCards);
                         Collections.shuffle(shuffled);
                         synchronized (cardQueue) {
@@ -222,12 +262,12 @@ public class AnkiManager {
             requeueCard(card);
         }
 
-        // Remove from offline cache list if not 'Again'
-        if (ease > 1) {
-            synchronized (cache) {
+        // Remove from offline cache list if not 'Again', and always persist cache
+        synchronized (cache) {
+            if (ease > 1) {
                 cache.cards.removeIf(c -> c.cardId == card.cardId);
-                cache.save();
             }
+            cache.save();
         }
 
         // Send to AnkiConnect or queue offline
@@ -240,6 +280,10 @@ public class AnkiManager {
         } else {
             queueOfflineReview(card.cardId, ease);
         }
+
+        // Report answer event to SleepCards private server
+        long deckId = card.deckId != 0L ? card.deckId : resolveDeckId(card.deckName);
+        sleepCardsClient.enqueueAnswer(card.cardId, card.noteId, deckId, ease, card.cardType);
 
         // Dispatch rewards / feedback
         Minecraft mc = Minecraft.getInstance();
@@ -272,5 +316,226 @@ public class AnkiManager {
             cache.pendingReviews.add(new PendingReview(cardId, ease, System.currentTimeMillis()));
             cache.save();
         }
+    }
+
+    private long resolveDeckId(String deckName) {
+        if (deckName == null || deckName.isEmpty()) {
+            return 0L;
+        }
+        for (AnkiDeck d : decks) {
+            if (deckName.equals(d.name)) {
+                return d.id;
+            }
+        }
+        return 0L;
+    }
+
+    private void showSleepCardsMessage(String msg) {
+        if (msg == null || msg.isBlank() || !config.sleepCardsShowMessages) {
+            return;
+        }
+        this.lastSleepCardsMessage = msg;
+        this.lastSleepCardsMessageUntilMs = System.currentTimeMillis() + 5000L;
+        Minecraft mc = Minecraft.getInstance();
+        mc.execute(() -> {
+            if (mc.player != null) {
+                mc.player.sendOverlayMessage(
+                        Component.literal("[SleepCards] " + msg).withStyle(ChatFormatting.AQUA)
+                );
+            }
+        });
+    }
+
+    public String getActiveSleepCardsMessage() {
+        if (!lastSleepCardsMessage.isEmpty() && System.currentTimeMillis() < lastSleepCardsMessageUntilMs) {
+            return lastSleepCardsMessage;
+        }
+        return "";
+    }
+
+    private void handleSleepCardsCommands(JsonArray commands) {
+        Minecraft mc = Minecraft.getInstance();
+        mc.execute(() -> {
+            for (JsonElement el : commands) {
+                if (!el.isJsonObject()) {
+                    continue;
+                }
+                JsonObject c = el.getAsJsonObject();
+                String kind = c.has("type") && c.get("type").isJsonPrimitive()
+                        ? c.get("type").getAsString()
+                        : null;
+
+                if ("focus".equals(kind)) {
+                    sleepCardsChallengeUntilMs = System.currentTimeMillis() + 300_000L;
+                    reportSleepCardsStatus();
+                    boolean startReview = !c.has("start_review") || c.get("start_review").getAsBoolean();
+                    if (startReview && mc.player != null && !(mc.gui.screen() instanceof QuizScreen)) {
+                        boolean needSync = getQueuedCount() == 0;
+                        mc.gui.setScreen(new QuizScreen(true, null));
+                        if (needSync) {
+                            syncNow().thenRun(() -> mc.execute(() -> {
+                                if (mc.gui.screen() instanceof QuizScreen qs) {
+                                    qs.reloadAfterDeckChange();
+                                }
+                            }));
+                        }
+                    }
+                } else if ("close".equals(kind) || "unfocus".equals(kind) || "done".equals(kind)) {
+                    sleepCardsChallengeUntilMs = 0L;
+                    if (mc.gui.screen() instanceof QuizScreen qs) {
+                        qs.onClose();
+                    }
+                }
+
+                if (c.has("text") && c.get("text").isJsonPrimitive()) {
+                    showSleepCardsMessage(c.get("text").getAsString());
+                }
+            }
+        });
+    }
+
+    public void flushAndSaveBeforeClose() {
+        synchronized (cache) {
+            cache.save();
+        }
+        config.save();
+        sleepCardsClient.wakeWorker();
+        if (ankiConnected) {
+            flushPendingReviews().thenCompose(v -> config.autoSyncAnkiWeb
+                    ? ankiClient.syncAnkiWeb()
+                    : CompletableFuture.completedFuture(false));
+        }
+    }
+
+    public boolean isLearningActive() {
+        return learningActive;
+    }
+
+    public void reportLearningState(boolean active) {
+        if (this.learningActive == active) {
+            return;
+        }
+        this.learningActive = active;
+        if (!config.sleepCardsEnabled || config.sleepCardsToken == null || config.sleepCardsToken.isBlank()) {
+            return;
+        }
+        Minecraft mc = Minecraft.getInstance();
+        mc.execute(() -> {
+            if (mc.player != null && mc.player.connection != null) {
+                mc.player.connection.sendCommand(active ? "anki lernen" : "anki fertig");
+            }
+        });
+    }
+
+    public void resetLearningState() {
+        this.learningActive = false;
+        this.sleepCardsChallengeUntilMs = 0L;
+    }
+
+    public void reportNoDueCards() {
+        if (!config.sleepCardsEnabled || config.sleepCardsToken == null || config.sleepCardsToken.isBlank()) {
+            return;
+        }
+        sleepCardsClient.enqueueStatus(0, resolveReportedDeckName());
+    }
+
+    private String resolveReportedDeckName() {
+        String targetDeck = config.sleepCardsDeck != null ? config.sleepCardsDeck.trim() : "";
+        if (!targetDeck.isEmpty()) {
+            for (AnkiDeck d : decks) {
+                if (d.name.equals(targetDeck) || d.name.startsWith(targetDeck + "::")) {
+                    return d.name;
+                }
+            }
+        }
+        if (!config.selectedDecks.isEmpty()) {
+            return config.selectedDecks.get(0);
+        }
+        if (!decks.isEmpty()) {
+            return decks.get(0).name;
+        }
+        return targetDeck.isEmpty() ? "Default" : targetDeck;
+    }
+
+    private void reportSleepCardsStatus() {
+        String targetDeck = config.sleepCardsDeck != null ? config.sleepCardsDeck.trim() : "";
+        String reportedDeck = "";
+        int due = 0;
+
+        if (!targetDeck.isEmpty()) {
+            for (AnkiDeck d : decks) {
+                if (d.name.equals(targetDeck) || d.name.startsWith(targetDeck + "::")) {
+                    due += d.totalDue();
+                    if (reportedDeck.isEmpty()) {
+                        reportedDeck = d.name;
+                    }
+                }
+            }
+        }
+
+        if (reportedDeck.isEmpty()) {
+            if (!config.selectedDecks.isEmpty()) {
+                for (AnkiDeck d : decks) {
+                    if (config.selectedDecks.contains(d.name)) {
+                        due += d.totalDue();
+                    }
+                }
+                reportedDeck = config.selectedDecks.get(0);
+            } else if (!decks.isEmpty()) {
+                for (AnkiDeck d : decks) {
+                    due += d.totalDue();
+                }
+                reportedDeck = decks.get(0).name;
+            } else {
+                due = getQueuedCount();
+                reportedDeck = targetDeck.isEmpty() ? "Default" : targetDeck;
+            }
+        }
+
+        sleepCardsClient.enqueueStatus(due, reportedDeck);
+    }
+
+    private void handleSleepCardsReply(JsonObject reply) {
+        if (System.currentTimeMillis() > sleepCardsChallengeUntilMs) {
+            return;
+        }
+        Boolean finished = null;
+        if (reply.has("done") && reply.get("done").isJsonPrimitive()) {
+            finished = reply.get("done").getAsBoolean();
+        } else if (reply.has("remaining") && reply.get("remaining").isJsonPrimitive()) {
+            try {
+                finished = reply.get("remaining").getAsInt() <= 0;
+            } catch (Exception ignored) {
+            }
+        } else if (reply.has("message") && reply.get("message").isJsonPrimitive()) {
+            Matcher m = PROGRESS_PATTERN.matcher(reply.get("message").getAsString());
+            if (m.find()) {
+                try {
+                    int doneCount = Integer.parseInt(m.group(1));
+                    int totalCount = Integer.parseInt(m.group(2));
+                    if (totalCount > 0) {
+                        finished = doneCount >= totalCount;
+                    }
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+
+        if (finished == null) {
+            return;
+        }
+
+        final boolean isDone = finished;
+        Minecraft mc = Minecraft.getInstance();
+        mc.execute(() -> {
+            if (isDone) {
+                sleepCardsChallengeUntilMs = 0L;
+                if (mc.gui.screen() instanceof QuizScreen qs) {
+                    qs.onClose();
+                }
+            } else if (mc.player != null && !(mc.gui.screen() instanceof QuizScreen)) {
+                mc.gui.setScreen(new QuizScreen(true, null));
+            }
+        });
     }
 }

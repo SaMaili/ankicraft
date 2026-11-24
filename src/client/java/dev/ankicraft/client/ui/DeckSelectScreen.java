@@ -268,6 +268,7 @@ public class DeckSelectScreen extends Screen {
 
     @Override
     public void onClose() {
+        manager.getConfig().save();
         this.minecraft.gui.setScreen(parent);
     }
 

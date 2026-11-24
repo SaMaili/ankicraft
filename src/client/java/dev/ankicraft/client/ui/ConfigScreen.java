@@ -112,7 +112,11 @@ public class ConfigScreen extends Screen {
 
         addRenderableWidget(Button.builder(Component.literal("Decks auswählen..."), btn ->
                 this.minecraft.gui.setScreen(new DeckSelectScreen(this))
-        ).bounds(leftX, y, cardW - 32, 20).build());
+        ).bounds(leftX, y, colW, 20).build());
+
+        addRenderableWidget(Button.builder(Component.literal("SleepCards & Sync..."), btn ->
+                this.minecraft.gui.setScreen(new SleepCardsConfigScreen(this))
+        ).bounds(rightX, y, colW, 20).build());
 
         int footerY = cardY + cardH - 32;
         addRenderableWidget(Button.builder(Component.literal("Speichern & Zurück"), btn -> {

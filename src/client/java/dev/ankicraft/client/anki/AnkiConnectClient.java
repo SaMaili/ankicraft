@@ -21,8 +21,11 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class AnkiConnectClient {
+    private static final Pattern FIELD_SOUND_PATTERN = Pattern.compile("(?i)\\[sound:([^\\]]+)\\]");
     private static final Gson GSON = new Gson();
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(2))
@@ -37,6 +40,15 @@ public class AnkiConnectClient {
         return invoke("version", null)
                 .thenApply(res -> res != null && !res.isJsonNull())
                 .exceptionally(ex -> false);
+    }
+
+    public CompletableFuture<Boolean> syncAnkiWeb() {
+        return invoke("sync", null, Duration.ofSeconds(15))
+                .thenApply(res -> true)
+                .exceptionally(ex -> {
+                    AnkiCraftMod.LOGGER.debug("AnkiWeb sync via AnkiConnect skipped/failed: {}", ex.getMessage());
+                    return false;
+                });
     }
 
     public CompletableFuture<List<AnkiDeck>> fetchDecks() {
@@ -119,6 +131,8 @@ public class AnkiConnectClient {
                     JsonObject obj = el.getAsJsonObject();
                     long cardId = obj.has("cardId") ? obj.get("cardId").getAsLong() : 0L;
                     long noteId = obj.has("note") ? obj.get("note").getAsLong() : 0L;
+                    long deckId = obj.has("deckId") ? obj.get("deckId").getAsLong() : 0L;
+                    int cardType = obj.has("type") ? obj.get("type").getAsInt() : 2;
                     String deckName = obj.has("deckName") ? obj.get("deckName").getAsString() : "Default";
                     String qHtml = obj.has("question") ? obj.get("question").getAsString() : "";
                     String aHtml = obj.has("answer") ? obj.get("answer").getAsString() : "";
@@ -129,8 +143,9 @@ public class AnkiConnectClient {
                             nextReviews.add(nr.getAsString());
                         }
                     }
+                    List<String> soundFiles = extractSoundFiles(obj);
                     if (cardId != 0L) {
-                        cards.add(new AnkiCard(cardId, noteId, deckName, qHtml, aHtml, nextReviews));
+                        cards.add(new AnkiCard(cardId, noteId, deckId, cardType, deckName, qHtml, aHtml, nextReviews, soundFiles));
                     }
                 }
                 return cards;
@@ -174,6 +189,10 @@ public class AnkiConnectClient {
     }
 
     private CompletableFuture<JsonElement> invoke(String action, JsonObject params) {
+        return invoke(action, params, Duration.ofSeconds(5));
+    }
+
+    private CompletableFuture<JsonElement> invoke(String action, JsonObject params, Duration timeout) {
         JsonObject body = new JsonObject();
         body.addProperty("action", action);
         body.addProperty("version", 6);
@@ -186,7 +205,7 @@ public class AnkiConnectClient {
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(config.ankiConnectUrl))
-                .timeout(Duration.ofSeconds(5))
+                .timeout(timeout)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)))
                 .build();
@@ -202,6 +221,32 @@ public class AnkiConnectClient {
                     }
                     return json.get("result");
                 });
+    }
+
+    private static List<String> extractSoundFiles(JsonObject cardObj) {
+        List<String> sounds = new ArrayList<>();
+        if (!cardObj.has("fields") || !cardObj.get("fields").isJsonObject()) {
+            return sounds;
+        }
+        JsonObject fieldsObj = cardObj.getAsJsonObject("fields");
+        List<JsonObject> ordered = new ArrayList<>();
+        for (Map.Entry<String, JsonElement> e : fieldsObj.entrySet()) {
+            if (e.getValue().isJsonObject()) {
+                ordered.add(e.getValue().getAsJsonObject());
+            }
+        }
+        ordered.sort(Comparator.comparingInt(f -> getInt(f, "order", 0)));
+        for (JsonObject field : ordered) {
+            if (!field.has("value") || !field.get("value").isJsonPrimitive()) continue;
+            Matcher m = FIELD_SOUND_PATTERN.matcher(field.get("value").getAsString());
+            while (m.find()) {
+                String name = m.group(1).trim();
+                if (!name.isEmpty() && !sounds.contains(name)) {
+                    sounds.add(name);
+                }
+            }
+        }
+        return sounds;
     }
 
     private static int getInt(JsonObject obj, String key, int fallback) {

@@ -17,6 +17,13 @@ import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.Map;
 import java.util.Set;
@@ -24,6 +31,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class LatexRenderer {
+    static {
+        ImageIO.scanForPlugins();
+    }
+
+    private static final HttpClient IMAGE_HTTP = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(5))
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .build();
     public record RenderedTexture(Identifier textureId, int width, int height, boolean failed) {}
 
     private static final float SUPERSAMPLE = 2.0f;
@@ -69,15 +84,43 @@ public class LatexRenderer {
             return tex;
         }
 
+        if ((filename.startsWith("http://") || filename.startsWith("https://")) && pendingImages.add(filename)) {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(filename))
+                    .timeout(Duration.ofSeconds(8))
+                    .GET()
+                    .build();
+            IMAGE_HTTP.sendAsync(req, HttpResponse.BodyHandlers.ofByteArray()).thenAccept(resp -> {
+                pendingImages.remove(filename);
+                if (resp.statusCode() >= 200 && resp.statusCode() < 300 && resp.body() != null && resp.body().length > 0) {
+                    byte[] bytes = resp.body();
+                    CardCache.saveMedia(filename, bytes);
+                    Minecraft.getInstance().execute(() -> {
+                        RenderedTexture tex = decodeImageToTexture("url_" + idCounter.incrementAndGet(), bytes);
+                        imageCache.put(filename, tex);
+                    });
+                } else {
+                    imageCache.put(filename, new RenderedTexture(null, 0, 0, true));
+                }
+            }).exceptionally(ex -> {
+                pendingImages.remove(filename);
+                imageCache.put(filename, new RenderedTexture(null, 0, 0, true));
+                return null;
+            });
+            return null;
+        }
+
         if (ankiClient != null && pendingImages.add(filename)) {
             ankiClient.retrieveMediaFile(filename).thenAccept(bytes -> {
                 pendingImages.remove(filename);
-                if (bytes != null) {
+                if (bytes != null && bytes.length > 0) {
                     CardCache.saveMedia(filename, bytes);
                     Minecraft.getInstance().execute(() -> {
                         RenderedTexture tex = decodeImageToTexture("media_" + idCounter.incrementAndGet(), bytes);
                         imageCache.put(filename, tex);
                     });
+                } else {
+                    imageCache.put(filename, new RenderedTexture(null, 0, 0, true));
                 }
             });
         }
@@ -117,6 +160,13 @@ public class LatexRenderer {
         try {
             BufferedImage img = ImageIO.read(new ByteArrayInputStream(bytes));
             if (img == null) {
+                byte[] converted = transcodeToPngWithFfmpeg(bytes);
+                if (converted != null) {
+                    img = ImageIO.read(new ByteArrayInputStream(converted));
+                }
+            }
+            if (img == null) {
+                AnkiCraftMod.LOGGER.warn("Could not decode image {} ({} bytes)", name, bytes.length);
                 return new RenderedTexture(null, 0, 0, true);
             }
             Identifier id = registerBufferedImage(name, img);
@@ -124,6 +174,31 @@ public class LatexRenderer {
         } catch (Exception e) {
             AnkiCraftMod.LOGGER.warn("Failed to decode media image {}", name, e);
             return new RenderedTexture(null, 0, 0, true);
+        }
+    }
+
+    private static byte[] transcodeToPngWithFfmpeg(byte[] input) {
+        Path tmp = null;
+        try {
+            tmp = Files.createTempFile("ankicraft_img_", ".bin");
+            Files.write(tmp, input);
+            Process p = new ProcessBuilder(
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    "-i", tmp.toAbsolutePath().toString(),
+                    "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"
+            ).start();
+            byte[] out = p.getInputStream().readAllBytes();
+            int exit = p.waitFor();
+            return (exit == 0 && out.length > 0) ? out : null;
+        } catch (Exception e) {
+            return null;
+        } finally {
+            if (tmp != null) {
+                try {
+                    Files.deleteIfExists(tmp);
+                } catch (Exception ignored) {
+                }
+            }
         }
     }
 

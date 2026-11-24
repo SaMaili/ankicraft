@@ -4,18 +4,24 @@ import dev.ankicraft.client.AnkiManager;
 import dev.ankicraft.client.anki.AnkiModels.AnkiCard;
 import dev.ankicraft.client.config.AnkiCraftConfig;
 import dev.ankicraft.client.render.CardContentParser;
+import dev.ankicraft.client.render.CardContentParser.AudioBlock;
 import dev.ankicraft.client.render.CardContentParser.ContentBlock;
 import dev.ankicraft.client.render.CardContentRenderer;
+import dev.ankicraft.client.render.CardContentRenderer.AudioHitbox;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
+import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class QuizScreen extends Screen {
     private static final int BG_CARD = 0xEE0F172A;
@@ -37,7 +43,11 @@ public class QuizScreen extends Screen {
     private AnkiCard currentCard;
     private List<ContentBlock> questionBlocks = List.of();
     private List<ContentBlock> answerBlocks = List.of();
+    private final List<AudioHitbox> audioHitboxes = new ArrayList<>();
     private boolean answerShown = false;
+    private final Set<Integer> heldKeys = new HashSet<>();
+    private final long screenOpenedMs = System.currentTimeMillis();
+    private long answerRevealedMs = 0L;
     private double scrollY = 0;
     private int contentHeight = 0;
     private String undoBanner = "";
@@ -51,6 +61,10 @@ public class QuizScreen extends Screen {
         this.manager = AnkiManager.getInstance();
         this.gatekeeping = gatekeeping;
         this.onGatekeepPassed = onGatekeepPassed;
+        if (InputConstants.isKeyDown(InputConstants.KEY_SPACE)) {
+            heldKeys.add(InputConstants.KEY_SPACE);
+        }
+        manager.reportLearningState(true);
         loadNextCard();
     }
 
@@ -60,19 +74,33 @@ public class QuizScreen extends Screen {
     }
 
     private void loadNextCard() {
+        manager.getAudioPlayer().stop();
         this.currentCard = manager.pollNextCard();
         this.answerShown = false;
         this.scrollY = 0;
         if (currentCard != null) {
-            this.questionBlocks = CardContentParser.parse(currentCard.questionHtml);
+            this.questionBlocks = CardContentParser.parse(currentCard.questionHtml, currentCard.soundFiles);
             String ansHtml = extractAnswerPortion(currentCard.answerHtml);
-            this.answerBlocks = CardContentParser.parse(ansHtml);
+            this.answerBlocks = CardContentParser.parse(ansHtml, currentCard.soundFiles);
             if (this.answerBlocks.isEmpty() && currentCard.answerHtml != null) {
-                this.answerBlocks = CardContentParser.parse(currentCard.answerHtml);
+                this.answerBlocks = CardContentParser.parse(currentCard.answerHtml, currentCard.soundFiles);
+            }
+            if (manager.getConfig().autoPlayAudio) {
+                playFirstAudio(this.questionBlocks);
             }
         } else {
             this.questionBlocks = List.of();
             this.answerBlocks = List.of();
+            manager.reportNoDueCards();
+        }
+    }
+
+    private void playFirstAudio(List<ContentBlock> blocks) {
+        for (ContentBlock b : blocks) {
+            if (b instanceof AudioBlock audio) {
+                manager.getAudioPlayer().play(audio.filename());
+                return;
+            }
         }
     }
 
@@ -107,15 +135,21 @@ public class QuizScreen extends Screen {
 
         // Top-right utility buttons
         int topBtnY = cardY + 7;
-        addRenderableWidget(Button.builder(Component.literal("Decks"), btn ->
-                this.minecraft.gui.setScreen(new DeckSelectScreen(this))
-        ).bounds(cardX + cardW - 118, topBtnY, 52, 20).build());
+        boolean locked = isGatekeepActive();
+        if (currentCard != null && hasAnyAudio()) {
+            int audioX = locked ? (cardX + cardW - 62) : (cardX + cardW - 174);
+            addRenderableWidget(Button.builder(Component.literal("▶ Audio"), btn -> replayCurrentAudio())
+                    .bounds(audioX, topBtnY, 52, 20).build());
+        }
+        if (!locked) {
+            addRenderableWidget(Button.builder(Component.literal("Decks"), btn ->
+                    this.minecraft.gui.setScreen(new DeckSelectScreen(this))
+            ).bounds(cardX + cardW - 118, topBtnY, 52, 20).build());
 
-        addRenderableWidget(Button.builder(Component.literal("⚙"), btn ->
-                this.minecraft.gui.setScreen(new ConfigScreen(this))
-        ).bounds(cardX + cardW - 62, topBtnY, 24, 20).build());
+            addRenderableWidget(Button.builder(Component.literal("⚙"), btn ->
+                    this.minecraft.gui.setScreen(new ConfigScreen(this))
+            ).bounds(cardX + cardW - 62, topBtnY, 24, 20).build());
 
-        if (!isGatekeepActive()) {
             addRenderableWidget(Button.builder(Component.literal("✕"), btn -> onClose())
                     .bounds(cardX + cardW - 34, topBtnY, 24, 20).build());
         }
@@ -178,9 +212,28 @@ public class QuizScreen extends Screen {
         return Component.literal(base);
     }
 
+    private boolean hasAnyAudio() {
+        if (questionBlocks.stream().anyMatch(b -> b instanceof AudioBlock)) {
+            return true;
+        }
+        return answerShown && answerBlocks.stream().anyMatch(b -> b instanceof AudioBlock);
+    }
+
+    private void replayCurrentAudio() {
+        if (answerShown && answerBlocks.stream().anyMatch(b -> b instanceof AudioBlock)) {
+            playFirstAudio(answerBlocks);
+        } else {
+            playFirstAudio(questionBlocks);
+        }
+    }
+
     private void revealAnswer() {
         if (!answerShown && currentCard != null) {
             answerShown = true;
+            answerRevealedMs = System.currentTimeMillis();
+            if (manager.getConfig().autoPlayAudio) {
+                playFirstAudio(answerBlocks);
+            }
             init();
         }
     }
@@ -216,17 +269,25 @@ public class QuizScreen extends Screen {
         this.scrollY = 0;
         this.undoBanner = "↺ Karte rückgängig gemacht";
         this.undoBannerUntilMs = System.currentTimeMillis() + 2500L;
-        this.questionBlocks = CardContentParser.parse(currentCard.questionHtml);
+        this.questionBlocks = CardContentParser.parse(currentCard.questionHtml, currentCard.soundFiles);
         String ansHtml = extractAnswerPortion(currentCard.answerHtml);
-        this.answerBlocks = CardContentParser.parse(ansHtml);
+        this.answerBlocks = CardContentParser.parse(ansHtml, currentCard.soundFiles);
         if (this.answerBlocks.isEmpty() && currentCard.answerHtml != null) {
-            this.answerBlocks = CardContentParser.parse(currentCard.answerHtml);
+            this.answerBlocks = CardContentParser.parse(currentCard.answerHtml, currentCard.soundFiles);
         }
         init();
     }
 
-    private boolean isGatekeepActive() {
+    public boolean isGatekeepActive() {
         return gatekeeping && currentCard != null;
+    }
+
+    @Override
+    public void onClose() {
+        manager.getAudioPlayer().stop();
+        manager.flushAndSaveBeforeClose();
+        manager.reportLearningState(false);
+        super.onClose();
     }
 
     @Override
@@ -240,6 +301,20 @@ public class QuizScreen extends Screen {
     }
 
     @Override
+    public void tick() {
+        super.tick();
+        if (!heldKeys.isEmpty()) {
+            heldKeys.removeIf(k -> !InputConstants.isKeyDown(k));
+        }
+    }
+
+    @Override
+    public boolean keyReleased(KeyEvent event) {
+        heldKeys.remove(event.key());
+        return super.keyReleased(event);
+    }
+
+    @Override
     public boolean keyPressed(KeyEvent event) {
         int key = event.key();
         if (event.hasControlDown() && (key == InputConstants.KEY_Z || key == InputConstants.KEY_Y)) {
@@ -250,19 +325,61 @@ public class QuizScreen extends Screen {
             onClose();
             return true;
         }
-        if (currentCard != null) {
+        if (key == InputConstants.KEY_R && currentCard != null) {
+            replayCurrentAudio();
+            return true;
+        }
+        if (currentCard != null && isCardActionKey(key)) {
+            // Ignore held / OS-repeated keys and brief accidental presses right as the popup appears
+            if (!heldKeys.add(key)) {
+                return true;
+            }
+            long now = System.currentTimeMillis();
+            if (now - screenOpenedMs < 250L) {
+                return true;
+            }
             if (!answerShown && (key == InputConstants.KEY_SPACE || key == InputConstants.KEY_RETURN || key == InputConstants.KEY_NUMPADENTER)) {
                 revealAnswer();
                 return true;
             }
             if (answerShown) {
-                if (key == InputConstants.KEY_SPACE || key == InputConstants.KEY_3 || key == InputConstants.KEY_NUMPAD3) { rateCard(3); return true; }
+                if (key == InputConstants.KEY_SPACE) {
+                    if (now - answerRevealedMs >= 250L) {
+                        rateCard(3);
+                    }
+                    return true;
+                }
+                if (key == InputConstants.KEY_3 || key == InputConstants.KEY_NUMPAD3) { rateCard(3); return true; }
                 if (key == InputConstants.KEY_1 || key == InputConstants.KEY_NUMPAD1) { rateCard(1); return true; }
                 if (key == InputConstants.KEY_2 || key == InputConstants.KEY_NUMPAD2) { rateCard(2); return true; }
                 if (key == InputConstants.KEY_4 || key == InputConstants.KEY_NUMPAD4) { rateCard(4); return true; }
             }
         }
         return super.keyPressed(event);
+    }
+
+    private static boolean isCardActionKey(int key) {
+        return key == InputConstants.KEY_SPACE
+                || key == InputConstants.KEY_RETURN
+                || key == InputConstants.KEY_NUMPADENTER
+                || key == InputConstants.KEY_1 || key == InputConstants.KEY_NUMPAD1
+                || key == InputConstants.KEY_2 || key == InputConstants.KEY_NUMPAD2
+                || key == InputConstants.KEY_3 || key == InputConstants.KEY_NUMPAD3
+                || key == InputConstants.KEY_4 || key == InputConstants.KEY_NUMPAD4;
+    }
+
+    @Override
+    public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+        if (event.button() == 0 && event.y() >= viewTop && event.y() <= viewBottom) {
+            for (AudioHitbox hb : audioHitboxes) {
+                if (event.x() >= hb.x() && event.x() <= hb.x() + hb.width()
+                        && event.y() >= hb.y() && event.y() <= hb.y() + hb.height()) {
+                    manager.getAudioPlayer().play(hb.filename());
+                    return true;
+                }
+            }
+        }
+        return super.mouseClicked(event, doubleClick);
     }
 
     @Override
@@ -297,7 +414,7 @@ public class QuizScreen extends Screen {
 
         // Streak pill
         String streakText = "Streak: " + manager.getStreak();
-        int streakX = cardX + cardW - 184;
+        int streakX = cardX + cardW - (currentCard != null && hasAnyAudio() ? 238 : 184);
         if (streakX > cardX + 24 + font.width(title) + 8) {
             gfx.text(font, streakText, streakX, cardY + 12, manager.getStreak() > 0 ? ACCENT_SKY : TEXT_MUTED, false);
         }
@@ -312,18 +429,20 @@ public class QuizScreen extends Screen {
         } else {
             AnkiCraftConfig cfg = manager.getConfig();
             CardContentRenderer renderer = manager.getContentRenderer();
+            String playingAudio = manager.getAudioPlayer().getPlayingFilename();
+            audioHitboxes.clear();
 
             int drawY = viewTop - (int) scrollY;
             gfx.enableScissor(viewLeft - 4, viewTop, viewLeft + viewWidth + 4, viewBottom);
 
-            int qH = renderer.renderAndMeasure(gfx, font, questionBlocks, viewLeft, drawY, viewWidth, cfg.latexScale, true);
+            int qH = renderer.renderAndMeasure(gfx, font, questionBlocks, viewLeft, drawY, viewWidth, cfg.latexScale, true, audioHitboxes, playingAudio);
             int total = qH;
 
             if (answerShown) {
                 int divY = drawY + qH + 6;
                 gfx.fill(viewLeft, divY, viewLeft + viewWidth, divY + 1, ACCENT_SKY);
                 gfx.text(font, "Antwort", viewLeft, divY + 6, ACCENT_SKY, false);
-                int aH = renderer.renderAndMeasure(gfx, font, answerBlocks, viewLeft, divY + 20, viewWidth, cfg.latexScale, true);
+                int aH = renderer.renderAndMeasure(gfx, font, answerBlocks, viewLeft, divY + 20, viewWidth, cfg.latexScale, true, audioHitboxes, playingAudio);
                 total += 26 + aH;
             }
             this.contentHeight = total;
@@ -342,12 +461,16 @@ public class QuizScreen extends Screen {
 
         // Footer accent line
         gfx.fill(cardX + 1, cardY + cardH - 42, cardX + cardW - 1, cardY + cardH - 41, BORDER_COLOR);
-        if (!undoBanner.isEmpty() && System.currentTimeMillis() < undoBannerUntilMs) {
-            int bw = font.width(undoBanner) + 16;
+        String scMsg = manager.getActiveSleepCardsMessage();
+        String bannerText = (!undoBanner.isEmpty() && System.currentTimeMillis() < undoBannerUntilMs)
+                ? undoBanner
+                : scMsg;
+        if (!bannerText.isEmpty()) {
+            int bw = font.width(bannerText) + 16;
             int bx = cardX + (cardW - bw) / 2;
             int by = cardY + cardH - 60;
             gfx.fill(bx, by, bx + bw, by + 15, 0xDD0369A1);
-            gfx.centeredText(font, undoBanner, cardX + cardW / 2, by + 3, 0xFFF8FAFC);
+            gfx.centeredText(font, bannerText, cardX + cardW / 2, by + 3, 0xFFF8FAFC);
         }
         if (answerShown && currentCard != null) {
             int footerY = cardY + cardH - 34;

@@ -26,6 +26,8 @@ public class CardContentRenderer {
     private final LatexRenderer latexRenderer;
     private final AnkiConnectClient ankiClient;
 
+    public record AudioHitbox(int x, int y, int width, int height, String filename) {}
+
     public CardContentRenderer(LatexRenderer latexRenderer, AnkiConnectClient ankiClient) {
         this.latexRenderer = latexRenderer;
         this.ankiClient = ankiClient;
@@ -40,6 +42,21 @@ public class CardContentRenderer {
             int maxWidth,
             float latexScale,
             boolean draw
+    ) {
+        return renderAndMeasure(gfx, font, blocks, x, y, maxWidth, latexScale, draw, null, null);
+    }
+
+    public int renderAndMeasure(
+            GuiGraphicsExtractor gfx,
+            Font font,
+            List<ContentBlock> blocks,
+            int x,
+            int y,
+            int maxWidth,
+            float latexScale,
+            boolean draw,
+            List<AudioHitbox> audioHitboxes,
+            String playingAudio
     ) {
         int curY = y;
         float inlineFontSize = 15.0f * latexScale;
@@ -127,6 +144,32 @@ public class CardContentRenderer {
                         }
                         curY += font.lineHeight + 6;
                     }
+                }
+                case AudioBlock audio -> {
+                    boolean isPlaying = audio.filename().equals(playingAudio);
+                    String label = (isPlaying ? "▶ Spielt: " : "▶ Audio: ") + audio.filename();
+                    int maxLabelW = Math.max(60, maxWidth - 28);
+                    if (font.width(label) > maxLabelW) {
+                        label = font.plainSubstrByWidth(label, maxLabelW - 6) + "…";
+                    }
+                    int pillW = Math.min(maxWidth, font.width(label) + 20);
+                    int pillH = 20;
+                    int pillX = x + (maxWidth - pillW) / 2;
+                    int pillY = curY + 2;
+                    if (draw) {
+                        int bg = isPlaying ? 0xCC0369A1 : 0xCC1E293B;
+                        int border = isPlaying ? 0xFF38BDF8 : 0xFF475569;
+                        gfx.fill(pillX, pillY, pillX + pillW, pillY + pillH, bg);
+                        gfx.fill(pillX, pillY, pillX + pillW, pillY + 1, border);
+                        gfx.fill(pillX, pillY + pillH - 1, pillX + pillW, pillY + pillH, border);
+                        gfx.fill(pillX, pillY, pillX + 1, pillY + pillH, border);
+                        gfx.fill(pillX + pillW - 1, pillY, pillX + pillW, pillY + pillH, border);
+                        gfx.text(font, label, pillX + 10, pillY + 6, isPlaying ? 0xFFF8FAFC : 0xFF7DD3FC, false);
+                        if (audioHitboxes != null) {
+                            audioHitboxes.add(new AudioHitbox(pillX, pillY, pillW, pillH, audio.filename()));
+                        }
+                    }
+                    curY += pillH + 6;
                 }
                 case ParagraphBlock para -> {
                     int startX = para.isBullet() ? x + 12 : x;

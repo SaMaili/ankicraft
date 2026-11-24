@@ -5,6 +5,7 @@ import dev.ankicraft.AnkiCraftMod;
 import dev.ankicraft.client.ui.AnkiHudOverlay;
 import dev.ankicraft.client.ui.ConfigScreen;
 import dev.ankicraft.client.ui.DeckSelectScreen;
+import dev.ankicraft.client.ui.QuizScreen;
 import dev.ankicraft.network.AnkiCraftNetwork.ServerHelloPayload;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -74,9 +75,10 @@ public class AnkiCraftClient implements ClientModInitializer {
             manager.syncNow();
         });
 
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) ->
-                manager.setServerSupportsAnkiCraft(false)
-        );
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+                manager.setServerSupportsAnkiCraft(false);
+                manager.resetLearningState();
+        });
 
         // Client Tick & Keybinds
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {
@@ -86,10 +88,14 @@ public class AnkiCraftClient implements ClientModInitializer {
                 }
             }
             while (deckKey.consumeClick()) {
-                mc.gui.setScreen(new DeckSelectScreen(mc.gui.screen()));
+                if (!(mc.gui.screen() instanceof QuizScreen qs && qs.isGatekeepActive())) {
+                    mc.gui.setScreen(new DeckSelectScreen(mc.gui.screen()));
+                }
             }
             while (configKey.consumeClick()) {
-                mc.gui.setScreen(new ConfigScreen(mc.gui.screen()));
+                if (!(mc.gui.screen() instanceof QuizScreen qs && qs.isGatekeepActive())) {
+                    mc.gui.setScreen(new ConfigScreen(mc.gui.screen()));
+                }
             }
             triggers.onClientTick(mc);
         });

@@ -46,21 +46,33 @@ public final class AnkiModels {
     public static class AnkiCard {
         public long cardId;
         public long noteId;
+        public long deckId;
+        public int cardType;
         public String deckName;
         public String questionHtml;
         public String answerHtml;
         public List<String> nextReviews = new ArrayList<>();
+        public List<String> soundFiles = new ArrayList<>();
 
         public AnkiCard() {}
 
         public AnkiCard(long cardId, long noteId, String deckName, String questionHtml, String answerHtml, List<String> nextReviews) {
+            this(cardId, noteId, 0L, 2, deckName, questionHtml, answerHtml, nextReviews, List.of());
+        }
+
+        public AnkiCard(long cardId, long noteId, long deckId, int cardType, String deckName, String questionHtml, String answerHtml, List<String> nextReviews, List<String> soundFiles) {
             this.cardId = cardId;
             this.noteId = noteId;
+            this.deckId = deckId;
+            this.cardType = cardType;
             this.deckName = deckName;
             this.questionHtml = questionHtml;
             this.answerHtml = answerHtml;
             if (nextReviews != null) {
                 this.nextReviews = nextReviews;
+            }
+            if (soundFiles != null) {
+                this.soundFiles = soundFiles;
             }
         }
     }

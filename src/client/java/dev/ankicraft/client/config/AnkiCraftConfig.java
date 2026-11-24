@@ -37,6 +37,15 @@ public class AnkiCraftConfig {
     public boolean showHudOverlay = true;
     public float latexScale = 1.0f;
     public int autoSyncMinutes = 5;
+    public boolean autoSyncAnkiWeb = true;
+    public boolean autoPlayAudio = true;
+
+    // SleepCards private server integration
+    public boolean sleepCardsEnabled = true;
+    public String sleepCardsServerUrl = "https://anki.babo.zapto.org";
+    public String sleepCardsToken = "";
+    public String sleepCardsDeck = "main";
+    public boolean sleepCardsShowMessages = true;
 
     public static AnkiCraftConfig load() {
         if (Files.exists(CONFIG_PATH)) {
@@ -48,6 +57,11 @@ public class AnkiCraftConfig {
                     if (loaded.ankiConnectUrl == null || loaded.ankiConnectUrl.isBlank()) {
                         loaded.ankiConnectUrl = "http://127.0.0.1:8765";
                     }
+                    if (loaded.sleepCardsServerUrl == null || loaded.sleepCardsServerUrl.isBlank()) {
+                        loaded.sleepCardsServerUrl = "https://anki.babo.zapto.org";
+                    }
+                    if (loaded.sleepCardsToken == null) loaded.sleepCardsToken = "";
+                    if (loaded.sleepCardsDeck == null) loaded.sleepCardsDeck = "main";
                     loaded.quizIntervalSeconds = Math.max(30, loaded.quizIntervalSeconds);
                     loaded.blocksPerQuiz = Math.max(8, loaded.blocksPerQuiz);
                     loaded.latexScale = Math.max(0.6f, Math.min(2.0f, loaded.latexScale));
