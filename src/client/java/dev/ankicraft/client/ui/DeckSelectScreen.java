@@ -52,7 +52,9 @@ public class DeckSelectScreen extends Screen {
         super(Component.literal("AnkiCraft – Decks auswählen"));
         this.parent = parent;
         this.manager = AnkiManager.getInstance();
-        rebuildDeckTree("");
+        this.onlyDue = manager.getConfig().deckFilterOnlyDue;
+        this.collapsedDecks.addAll(manager.getConfig().collapsedDecks);
+        rebuildDeckTree(manager.getConfig().deckFilterQuery);
     }
 
     private void rebuildDeckTree(String query) {
@@ -108,12 +110,14 @@ public class DeckSelectScreen extends Screen {
         this.listBottom = cardY + cardH - 46;
         this.visibleRows = Math.max(1, (listBottom - listTop) / ROW_H);
 
-        String prevSearch = searchBox != null ? searchBox.getValue() : "";
+        String prevSearch = searchBox != null ? searchBox.getValue() : manager.getConfig().deckFilterQuery;
         int searchW = cardW - 196;
         searchBox = new EditBox(font, cardX + 14, cardY + 34, searchW, 20, Component.literal("Deck suchen..."));
         searchBox.setHint(Component.literal("Decks filtern..."));
         searchBox.setValue(prevSearch);
         searchBox.setResponder(q -> {
+            manager.getConfig().deckFilterQuery = q;
+            manager.getConfig().save();
             scrollOffset = 0;
             cursorIndex = 0;
             rebuildDeckTree(q);
@@ -124,6 +128,8 @@ public class DeckSelectScreen extends Screen {
 
         addRenderableWidget(Button.builder(Component.literal(onlyDue ? "Nur fällige: AN" : "Nur fällige: AUS"), btn -> {
             onlyDue = !onlyDue;
+            manager.getConfig().deckFilterOnlyDue = onlyDue;
+            manager.getConfig().save();
             scrollOffset = 0;
             rebuildDeckTree(searchBox != null ? searchBox.getValue() : "");
             init();
@@ -253,6 +259,8 @@ public class DeckSelectScreen extends Screen {
         } else {
             collapsedDecks.add(deckName);
         }
+        manager.getConfig().collapsedDecks = new ArrayList<>(collapsedDecks);
+        manager.getConfig().save();
         rebuildDeckTree(searchBox != null ? searchBox.getValue() : "");
         init();
     }
@@ -268,6 +276,9 @@ public class DeckSelectScreen extends Screen {
 
     @Override
     public void onClose() {
+        manager.getConfig().deckFilterOnlyDue = onlyDue;
+        manager.getConfig().deckFilterQuery = searchBox != null ? searchBox.getValue() : manager.getConfig().deckFilterQuery;
+        manager.getConfig().collapsedDecks = new ArrayList<>(collapsedDecks);
         manager.getConfig().save();
         this.minecraft.gui.setScreen(parent);
     }

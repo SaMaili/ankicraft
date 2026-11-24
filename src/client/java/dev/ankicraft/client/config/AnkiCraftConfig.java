@@ -21,6 +21,9 @@ public class AnkiCraftConfig {
     public String ankiConnectUrl = "http://127.0.0.1:8765";
     public String ankiConnectApiKey = "";
     public List<String> selectedDecks = new ArrayList<>();
+    public boolean deckFilterOnlyDue = false;
+    public String deckFilterQuery = "";
+    public List<String> collapsedDecks = new ArrayList<>();
 
     public boolean timerEnabled = true;
     public int quizIntervalSeconds = 300;
@@ -54,6 +57,8 @@ public class AnkiCraftConfig {
                 AnkiCraftConfig loaded = GSON.fromJson(json, AnkiCraftConfig.class);
                 if (loaded != null) {
                     if (loaded.selectedDecks == null) loaded.selectedDecks = new ArrayList<>();
+                    if (loaded.deckFilterQuery == null) loaded.deckFilterQuery = "";
+                    if (loaded.collapsedDecks == null) loaded.collapsedDecks = new ArrayList<>();
                     if (loaded.ankiConnectUrl == null || loaded.ankiConnectUrl.isBlank()) {
                         loaded.ankiConnectUrl = "http://127.0.0.1:8765";
                     }
