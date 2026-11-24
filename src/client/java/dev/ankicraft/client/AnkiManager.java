@@ -20,8 +20,10 @@ import dev.ankicraft.network.AnkiCraftNetwork.QuizResultPayload;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvents;
+import net.minecraft.world.entity.player.ChatVisiblity;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -54,6 +56,7 @@ public class AnkiManager {
     private int streak = 0;
     private int reviewedToday = 0;
     private volatile long sleepCardsChallengeUntilMs = 0L;
+    private volatile boolean pendingChallengeFocus = false;
     private volatile boolean learningActive = false;
     private volatile AnkiDeck currentStudyDeck = null;
     private volatile String lastSleepCardsMessage = "";
@@ -414,18 +417,15 @@ public class AnkiManager {
                     reportSleepCardsStatus();
                     boolean startReview = !c.has("start_review") || c.get("start_review").getAsBoolean();
                     if (startReview && mc.player != null && !(mc.gui.screen() instanceof QuizScreen)) {
-                        boolean needSync = getQueuedCount() == 0;
-                        mc.gui.setScreen(new QuizScreen(true, null));
-                        if (needSync) {
-                            syncNow().thenRun(() -> mc.execute(() -> {
-                                if (mc.gui.screen() instanceof QuizScreen qs) {
-                                    qs.reloadAfterDeckChange();
-                                }
-                            }));
+                        if (mc.player.isDeadOrDying() || mc.gui.screen() instanceof DeathScreen) {
+                            pendingChallengeFocus = true;
+                        } else {
+                            openServerChallengeQuiz(mc);
                         }
                     }
                 } else if ("close".equals(kind) || "unfocus".equals(kind) || "done".equals(kind)) {
                     sleepCardsChallengeUntilMs = 0L;
+                    pendingChallengeFocus = false;
                     if (mc.gui.screen() instanceof QuizScreen qs) {
                         qs.onClose();
                     }
@@ -460,6 +460,26 @@ public class AnkiManager {
         }
     }
 
+    public boolean consumePendingChallengeFocus() {
+        if (pendingChallengeFocus) {
+            pendingChallengeFocus = false;
+            return true;
+        }
+        return false;
+    }
+
+    public void openServerChallengeQuiz(Minecraft mc) {
+        boolean needSync = getQueuedCount() == 0;
+        mc.gui.setScreen(new QuizScreen(true, null));
+        if (needSync) {
+            syncNow().thenRun(() -> mc.execute(() -> {
+                if (mc.gui.screen() instanceof QuizScreen qs) {
+                    qs.reloadAfterDeckChange();
+                }
+            }));
+        }
+    }
+
     public boolean isLearningActive() {
         return learningActive;
     }
@@ -474,7 +494,10 @@ public class AnkiManager {
         }
         Minecraft mc = Minecraft.getInstance();
         mc.execute(() -> {
-            if (mc.player != null && mc.player.connection != null) {
+            if (mc.player != null
+                    && mc.player.connection != null
+                    && !mc.player.isDeadOrDying()
+                    && mc.options.chatVisibility().get() != ChatVisiblity.HIDDEN) {
                 mc.player.connection.sendCommand(active ? "anki lernen" : "anki fertig");
             }
         });
@@ -483,6 +506,7 @@ public class AnkiManager {
     public void resetLearningState() {
         this.learningActive = false;
         this.sleepCardsChallengeUntilMs = 0L;
+        this.pendingChallengeFocus = false;
     }
 
     public void reportNoDueCards() {
@@ -583,11 +607,16 @@ public class AnkiManager {
         mc.execute(() -> {
             if (isDone) {
                 sleepCardsChallengeUntilMs = 0L;
+                pendingChallengeFocus = false;
                 if (mc.gui.screen() instanceof QuizScreen qs) {
                     qs.onClose();
                 }
             } else if (mc.player != null && !(mc.gui.screen() instanceof QuizScreen)) {
-                mc.gui.setScreen(new QuizScreen(true, null));
+                if (mc.player.isDeadOrDying() || mc.gui.screen() instanceof DeathScreen) {
+                    pendingChallengeFocus = true;
+                } else {
+                    openServerChallengeQuiz(mc);
+                }
             }
         });
     }

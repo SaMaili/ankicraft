@@ -44,6 +44,11 @@ public class TriggerManager {
             manager.reportLearningState(false);
         }
 
+        if (!mc.player.isDeadOrDying() && manager.consumePendingChallengeFocus()) {
+            manager.openServerChallengeQuiz(mc);
+            return;
+        }
+
         if (cfg.timerEnabled) {
             tickCounter++;
             if (tickCounter >= cfg.quizIntervalSeconds * 20) {

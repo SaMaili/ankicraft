@@ -241,6 +241,7 @@ public class QuizScreen extends Screen {
     private void rateCard(int ease) {
         if (currentCard == null) return;
         AnkiCard rated = currentCard;
+        this.currentCard = null;
         undoStack.push(new UndoSnapshot(rated, manager.getStreak(), manager.getReviewedToday()));
         manager.submitAnswer(rated, ease);
 
