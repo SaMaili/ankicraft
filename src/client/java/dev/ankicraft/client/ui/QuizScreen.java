@@ -123,10 +123,12 @@ public class QuizScreen extends Screen {
         super.init();
         clearWidgets();
 
+        int topReserve = 42; // Platz oben für Server-BossBar / XP-Anzeige lassen
+        int bottomMargin = 10;
         this.cardW = Math.min(580, this.width - 24);
-        this.cardH = Math.min(390, this.height - 28);
+        this.cardH = Math.min(390, Math.max(200, this.height - topReserve - bottomMargin));
         this.cardX = (this.width - this.cardW) / 2;
-        this.cardY = (this.height - this.cardH) / 2;
+        this.cardY = topReserve + Math.max(0, (this.height - topReserve - bottomMargin - this.cardH) / 2);
 
         this.viewLeft = cardX + 18;
         this.viewWidth = cardW - 36;
@@ -398,6 +400,11 @@ public class QuizScreen extends Screen {
             return true;
         }
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollYDelta);
+    }
+
+    @Override
+    public void extractBackground(GuiGraphicsExtractor gfx, int mouseX, int mouseY, float partialTick) {
+        // Kein Blur / kein Vollbild-Dimming, damit die Server-BossBar oben klar sichtbar bleibt
     }
 
     @Override
