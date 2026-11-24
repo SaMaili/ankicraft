@@ -197,12 +197,15 @@ public class QuizScreen extends Screen {
                 // Strip Unicode bidi isolates (FSI/PDI/LRM/RLM) and non-breaking spaces
                 String interval = raw.replaceAll("[\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069]", "")
                         .replace('\u00A0', ' ')
-                        .replaceAll("\\s*Min\\.?", "m")
-                        .replaceAll("\\s*Std\\.?", "h")
-                        .replaceAll("\\s*Tage?", "d")
-                        .replaceAll("\\s*T\\.?", "d")
-                        .replaceAll("\\s*Mon\\.?", "mo")
-                        .replaceAll("\\s*J\\.?", "y")
+                        .replaceAll("(?i)\\s*Min\\.?\\b", "m")
+                        .replaceAll("(?i)\\s*Std\\.?\\b", "h")
+                        .replaceAll("(?i)\\s*Tage?\\b", "d")
+                        .replaceAll("(?i)\\s*Tg\\.?\\b", "d")
+                        .replaceAll("(?i)\\s*T\\.?", "d")
+                        .replaceAll("(?i)\\s*Monate?\\b", "mo")
+                        .replaceAll("(?i)\\s*Mon\\.?\\b", "mo")
+                        .replaceAll("(?i)\\s*Jahre?\\b", "y")
+                        .replaceAll("(?i)\\s*J\\.?", "y")
                         .trim();
                 if (!interval.isBlank()) {
                     return Component.literal(base + " (" + interval + ")");
