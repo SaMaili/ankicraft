@@ -541,6 +541,10 @@ public class AnkiManager {
         }
     }
 
+    public boolean isSleepCardsChallengeActive() {
+        return System.currentTimeMillis() < sleepCardsChallengeUntilMs;
+    }
+
     public boolean isLearningActive() {
         return learningActive;
     }

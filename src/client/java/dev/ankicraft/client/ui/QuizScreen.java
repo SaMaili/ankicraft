@@ -55,6 +55,7 @@ public class QuizScreen extends Screen {
 
     private int cardX, cardY, cardW, cardH;
     private int viewTop, viewBottom, viewLeft, viewWidth;
+    private boolean lastTopBarVisible = false;
 
     public QuizScreen(boolean gatekeeping, Runnable onGatekeepPassed) {
         super(Component.literal("AnkiCraft Quiz"));
@@ -123,12 +124,18 @@ public class QuizScreen extends Screen {
         super.init();
         clearWidgets();
 
-        int topReserve = 42; // Platz oben für Server-BossBar / XP-Anzeige lassen
-        int bottomMargin = 10;
+        this.lastTopBarVisible = isServerBarVisible();
         this.cardW = Math.min(580, this.width - 24);
-        this.cardH = Math.min(390, Math.max(200, this.height - topReserve - bottomMargin));
+        if (this.lastTopBarVisible) {
+            int topReserve = 42; // Platz oben für Server-BossBar / XP-Anzeige lassen
+            int bottomMargin = 10;
+            this.cardH = Math.min(390, Math.max(200, this.height - topReserve - bottomMargin));
+            this.cardY = topReserve + Math.max(0, (this.height - topReserve - bottomMargin - this.cardH) / 2);
+        } else {
+            this.cardH = Math.min(390, this.height - 28);
+            this.cardY = (this.height - this.cardH) / 2;
+        }
         this.cardX = (this.width - this.cardW) / 2;
-        this.cardY = topReserve + Math.max(0, (this.height - topReserve - bottomMargin - this.cardH) / 2);
 
         this.viewLeft = cardX + 18;
         this.viewWidth = cardW - 36;
@@ -316,6 +323,10 @@ public class QuizScreen extends Screen {
         if (!heldKeys.isEmpty()) {
             heldKeys.removeIf(k -> !InputConstants.isKeyDown(k));
         }
+        boolean topBarNow = isServerBarVisible();
+        if (topBarNow != lastTopBarVisible) {
+            init();
+        }
     }
 
     @Override
@@ -404,7 +415,40 @@ public class QuizScreen extends Screen {
 
     @Override
     public void extractBackground(GuiGraphicsExtractor gfx, int mouseX, int mouseY, float partialTick) {
-        // Kein Blur / kein Vollbild-Dimming, damit die Server-BossBar oben klar sichtbar bleibt
+        if (!isServerBarVisible()) {
+            super.extractBackground(gfx, mouseX, mouseY, partialTick);
+        }
+    }
+
+    private boolean isServerBarVisible() {
+        if (manager.isSleepCardsChallengeActive()) {
+            return true;
+        }
+        if (this.minecraft == null || this.minecraft.gui == null) {
+            return false;
+        }
+        try {
+            for (var f : this.minecraft.gui.getClass().getDeclaredFields()) {
+                if (f.getType().getSimpleName().equals("BossHealthOverlay")) {
+                    f.setAccessible(true);
+                    Object overlay = f.get(this.minecraft.gui);
+                    if (overlay != null) {
+                        for (var ef : overlay.getClass().getDeclaredFields()) {
+                            if (java.util.Map.class.isAssignableFrom(ef.getType())) {
+                                ef.setAccessible(true);
+                                Object map = ef.get(overlay);
+                                if (map instanceof java.util.Map<?, ?> m && !m.isEmpty()) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
     }
 
     @Override
