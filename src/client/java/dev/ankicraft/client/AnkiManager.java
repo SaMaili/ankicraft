@@ -111,8 +111,30 @@ public class AnkiManager {
         return audioPlayer;
     }
 
+    public record DueSummary(int newCount, int learnCount, int reviewCount) {
+        public int total() {
+            return newCount + learnCount + reviewCount;
+        }
+    }
+
     public List<AnkiDeck> getDecks() {
         return decks;
+    }
+
+    public DueSummary getDueSummary() {
+        List<AnkiDeck> activeDecks = getStudyDecks();
+        int n = 0;
+        int l = 0;
+        int r = 0;
+        for (AnkiDeck d : activeDecks) {
+            n += Math.max(0, d.newCount);
+            l += Math.max(0, d.learnCount);
+            r += Math.max(0, d.reviewCount);
+        }
+        if (n + l + r == 0 && !cardQueue.isEmpty()) {
+            r = cardQueue.size();
+        }
+        return new DueSummary(n, l, r);
     }
 
     public boolean isAnkiConnected() {
@@ -284,6 +306,7 @@ public class AnkiManager {
             }
             cache.save();
         }
+        updateLocalDeckCounts(card, ease);
 
         // Send to AnkiConnect or queue offline
         if (ankiConnected) {
@@ -347,6 +370,33 @@ public class AnkiManager {
         }
     }
 
+    private void updateLocalDeckCounts(AnkiCard card, int ease) {
+        if (card == null || card.deckName == null) {
+            return;
+        }
+        for (AnkiDeck d : decks) {
+            if (card.deckName.equals(d.name) || card.deckName.startsWith(d.name + "::")) {
+                if (ease == 1) {
+                    if (card.cardType == 0 && d.newCount > 0) {
+                        d.newCount--;
+                        d.learnCount++;
+                    } else if (card.cardType == 2 && d.reviewCount > 0) {
+                        d.reviewCount--;
+                        d.learnCount++;
+                    }
+                } else {
+                    if (card.cardType == 0) {
+                        if (d.newCount > 0) d.newCount--;
+                    } else if (card.cardType == 1 || card.cardType == 3) {
+                        if (d.learnCount > 0) d.learnCount--;
+                    } else {
+                        if (d.reviewCount > 0) d.reviewCount--;
+                    }
+                }
+            }
+        }
+    }
+
     private List<AnkiDeck> getStudyDecks() {
         List<AnkiDeck> result = new ArrayList<>();
         if (config.selectedDecks.isEmpty()) {
@@ -358,11 +408,22 @@ public class AnkiManager {
             return result.isEmpty() ? new ArrayList<>(decks) : result;
         }
         for (AnkiDeck d : decks) {
-            if (config.selectedDecks.contains(d.name)) {
+            if (config.selectedDecks.contains(d.name) && !hasSelectedAncestor(d.name)) {
                 result.add(d);
             }
         }
         return result;
+    }
+
+    private boolean hasSelectedAncestor(String deckName) {
+        int idx = 0;
+        while ((idx = deckName.indexOf("::", idx)) != -1) {
+            if (config.selectedDecks.contains(deckName.substring(0, idx))) {
+                return true;
+            }
+            idx += 2;
+        }
+        return false;
     }
 
     private long resolveDeckId(String deckName) {

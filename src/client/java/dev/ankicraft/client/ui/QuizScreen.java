@@ -131,7 +131,7 @@ public class QuizScreen extends Screen {
         this.viewLeft = cardX + 18;
         this.viewWidth = cardW - 36;
         this.viewTop = cardY + 38;
-        this.viewBottom = cardY + cardH - 46;
+        this.viewBottom = cardY + cardH - 58;
 
         // Top-right utility buttons
         int topBtnY = cardY + 7;
@@ -464,6 +464,24 @@ public class QuizScreen extends Screen {
             }
         }
 
+        // Anki-style due counter bar above footer
+        AnkiManager.DueSummary due = manager.getDueSummary();
+        int dueBarY = cardY + cardH - 55;
+        String newStr = due.newCount() + " Neu";
+        String learnStr = due.learnCount() + " Lernen";
+        String revStr = due.reviewCount() + " Wiederh.";
+        String totalStr = " | Noch fällig: " + due.total();
+        int sepW = font.width("  ");
+        int totalW = font.width(newStr) + sepW + font.width(learnStr) + sepW + font.width(revStr) + font.width(totalStr);
+        int dx = cardX + (cardW - totalW) / 2;
+        gfx.text(font, newStr, dx, dueBarY, ACCENT_SKY, false);
+        dx += font.width(newStr) + sepW;
+        gfx.text(font, learnStr, dx, dueBarY, ACCENT_ROSE, false);
+        dx += font.width(learnStr) + sepW;
+        gfx.text(font, revStr, dx, dueBarY, ACCENT_EMERALD, false);
+        dx += font.width(revStr);
+        gfx.text(font, totalStr, dx, dueBarY, TEXT_MUTED, false);
+
         // Footer accent line
         gfx.fill(cardX + 1, cardY + cardH - 42, cardX + cardW - 1, cardY + cardH - 41, BORDER_COLOR);
         String scMsg = manager.getActiveSleepCardsMessage();
@@ -473,7 +491,7 @@ public class QuizScreen extends Screen {
         if (!bannerText.isEmpty()) {
             int bw = font.width(bannerText) + 16;
             int bx = cardX + (cardW - bw) / 2;
-            int by = cardY + cardH - 60;
+            int by = cardY + cardH - 74;
             gfx.fill(bx, by, bx + bw, by + 15, 0xDD0369A1);
             gfx.centeredText(font, bannerText, cardX + cardW / 2, by + 3, 0xFFF8FAFC);
         }
