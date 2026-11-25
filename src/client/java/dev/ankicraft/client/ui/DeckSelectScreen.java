@@ -28,9 +28,13 @@ public class DeckSelectScreen extends Screen {
     private static final int BG_ROW_SELECTED = 0xCC0369A1;
     private static final int BORDER_COLOR = 0xFF334155;
     private static final int ACCENT_SKY = 0xFF38BDF8;
+    private static final int ACCENT_ROSE = 0xFFF43F5E;
+    private static final int ACCENT_EMERALD = 0xFF10B981;
+    private static final float ROW_TEXT_SCALE = 0.82f;
 
     private final Screen parent;
     private final AnkiManager manager;
+    private final List<String> initialSelectedDecks;
     private EditBox searchBox;
     private List<AnkiDeck> filteredDecks = new ArrayList<>();
     private final Set<String> collapsedDecks = new HashSet<>();
@@ -45,13 +49,14 @@ public class DeckSelectScreen extends Screen {
 
     private int cardX, cardY, cardW, cardH;
     private int listTop, listBottom;
-    private static final int ROW_H = 24;
-    private int visibleRows = 8;
+    private static final int ROW_H = 16;
+    private int visibleRows = 12;
 
     public DeckSelectScreen(Screen parent) {
         super(Component.literal("AnkiCraft – Decks auswählen"));
         this.parent = parent;
         this.manager = AnkiManager.getInstance();
+        this.initialSelectedDecks = new ArrayList<>(manager.getConfig().selectedDecks);
         this.onlyDue = manager.getConfig().deckFilterOnlyDue;
         this.collapsedDecks.addAll(manager.getConfig().collapsedDecks);
         rebuildDeckTree(manager.getConfig().deckFilterQuery);
@@ -160,6 +165,7 @@ public class DeckSelectScreen extends Screen {
             pushUndoSnapshot();
             manager.getConfig().selectedDecks.clear();
             manager.getConfig().save();
+            manager.onDeckSelectionChanged();
             statusMessage = "Auswahl zurückgesetzt (alle Decks aktiv).";
             statusColor = ACCENT_SKY;
             init();
@@ -187,6 +193,9 @@ public class DeckSelectScreen extends Screen {
             statusMessage = "Lade Karten für gewählte Decks...";
             statusColor = ACCENT_SKY;
             manager.getConfig().save();
+            manager.onDeckSelectionChanged();
+            initialSelectedDecks.clear();
+            initialSelectedDecks.addAll(manager.getConfig().selectedDecks);
             manager.syncNow().thenRun(() -> this.minecraft.execute(() -> {
                 if (parent instanceof QuizScreen qs) {
                     qs.reloadAfterDeckChange();
@@ -205,6 +214,7 @@ public class DeckSelectScreen extends Screen {
         manager.getConfig().selectedDecks.clear();
         manager.getConfig().selectedDecks.addAll(selectionHistory.pop());
         manager.getConfig().save();
+        manager.onDeckSelectionChanged();
         statusMessage = "Auswahl rückgängig gemacht.";
         statusColor = ACCENT_SKY;
         init();
@@ -227,6 +237,7 @@ public class DeckSelectScreen extends Screen {
             }
         }
         manager.getConfig().save();
+        manager.onDeckSelectionChanged();
     }
 
     private void toggleDeckAt(int idx) {
@@ -250,6 +261,7 @@ public class DeckSelectScreen extends Screen {
             selected.removeIf(name -> name.equals(deck.name) || name.startsWith(prefix));
         }
         manager.getConfig().save();
+        manager.onDeckSelectionChanged();
     }
 
     private void toggleCollapse(String deckName) {
@@ -280,6 +292,15 @@ public class DeckSelectScreen extends Screen {
         manager.getConfig().deckFilterQuery = searchBox != null ? searchBox.getValue() : manager.getConfig().deckFilterQuery;
         manager.getConfig().collapsedDecks = new ArrayList<>(collapsedDecks);
         manager.getConfig().save();
+        boolean selectionChanged = !manager.getConfig().selectedDecks.equals(initialSelectedDecks);
+        if (selectionChanged) {
+            manager.onDeckSelectionChanged();
+            manager.syncNow().thenRun(() -> this.minecraft.execute(() -> {
+                if (this.minecraft.gui.screen() instanceof QuizScreen qs) {
+                    qs.reloadAfterDeckChange();
+                }
+            }));
+        }
         this.minecraft.gui.setScreen(parent);
     }
 
@@ -354,11 +375,23 @@ public class DeckSelectScreen extends Screen {
         gfx.fill(cardX, cardY, cardX + 1, cardY + cardH, BORDER_COLOR);
         gfx.fill(cardX + cardW - 1, cardY, cardX + cardW, cardY + cardH, BORDER_COLOR);
 
-        String subtitle = manager.getConfig().selectedDecks.isEmpty()
-                ? "Aktiv: Alle Decks"
-                : "Aktiv: " + manager.getConfig().selectedDecks.size() + " Deck(s)";
-        gfx.text(font, "Anki Decks auswählen", cardX + 16, cardY + 12, 0xFFF8FAFC, false);
-        gfx.text(font, subtitle, cardX + cardW - 16 - font.width(subtitle), cardY + 12, ACCENT_SKY, false);
+        AnkiManager.DueSummary due = manager.getDueSummary();
+        String deckTag = manager.getConfig().selectedDecks.isEmpty()
+                ? "Alle"
+                : manager.getConfig().selectedDecks.size() + " Deck(s)";
+        gfx.text(font, "Anki Decks (" + deckTag + ")", cardX + 16, cardY + 12, 0xFFF8FAFC, false);
+
+        String hNew = due.newCount() + " Neu";
+        String hLearn = due.learnCount() + " Lern.";
+        String hRev = due.reviewCount() + " Wdh.";
+        int hGap = font.width("  ");
+        int hTotalW = font.width(hNew) + hGap + font.width(hLearn) + hGap + font.width(hRev);
+        int hx = cardX + cardW - 16 - hTotalW;
+        gfx.text(font, hNew, hx, cardY + 12, ACCENT_SKY, false);
+        hx += font.width(hNew) + hGap;
+        gfx.text(font, hLearn, hx, cardY + 12, ACCENT_ROSE, false);
+        hx += font.width(hLearn) + hGap;
+        gfx.text(font, hRev, hx, cardY + 12, ACCENT_EMERALD, false);
 
         if (filteredDecks.isEmpty()) {
             String msg = statusMessage.isEmpty()
@@ -424,39 +457,58 @@ public class DeckSelectScreen extends Screen {
                 gfx.fill(x, y, x + 2, y + h, ACCENT_SKY);
             }
 
-            int indent = Math.min(4, deck.depth()) * 12;
-            int curX = x + 6 + indent;
+            int indent = Math.min(4, deck.depth()) * 10;
+            float invScale = 1.0f / ROW_TEXT_SCALE;
+            int scaledW = Math.round(w * invScale);
+            int textY = Math.max(2, Math.round((h - font.lineHeight * ROW_TEXT_SCALE) / (2.0f * ROW_TEXT_SCALE)));
+
+            gfx.pose().pushMatrix();
+            gfx.pose().translate(x, y);
+            gfx.pose().scale(ROW_TEXT_SCALE, ROW_TEXT_SCALE);
+
+            int curX = Math.round((6 + indent) * invScale);
 
             if (hasChildren) {
                 String arrow = isCollapsed ? "▸" : "▾";
-                gfx.text(font, arrow, curX, y + 7, ACCENT_SKY, false);
+                gfx.text(font, arrow, curX, textY, ACCENT_SKY, false);
             }
-            curX += 12;
+            curX += 11;
 
             String check = isSelected ? "[✓]" : (partial ? "[-]" : "[ ]");
             int checkColor = isSelected ? ACCENT_SKY : (partial ? 0xFFF59E0B : 0xFF94A3B8);
-            gfx.text(font, check, curX, y + 7, checkColor, false);
-            curX += 22;
+            gfx.text(font, check, curX, textY, checkColor, false);
+            curX += 20;
 
-            String dueStr = deck.totalDue() + " fällig";
-            int dueW = font.width(dueStr);
-            int maxNameW = (x + w - 10 - dueW - 8) - curX;
+            String newStr = String.valueOf(Math.max(0, deck.newCount));
+            String learnStr = String.valueOf(Math.max(0, deck.learnCount));
+            String revStr = String.valueOf(Math.max(0, deck.reviewCount));
+            int colW = 24;
+            int rightEdge = scaledW - 8;
+            int revX = rightEdge - font.width(revStr);
+            int learnX = rightEdge - colW - font.width(learnStr);
+            int newX = rightEdge - colW * 2 - font.width(newStr);
+
+            int maxNameW = (rightEdge - colW * 3 - 6) - curX;
             String label = deck.shortName();
             if (font.width(label) > maxNameW && maxNameW > 12) {
                 label = font.plainSubstrByWidth(label, maxNameW - 6) + "…";
             }
-            gfx.text(font, label, curX, y + 7, 0xFFF1F5F9, false);
+            gfx.text(font, label, curX, textY, 0xFFF1F5F9, false);
 
-            int dueColor = deck.totalDue() > 0 ? 0xFF34D399 : 0xFF64748B;
-            gfx.text(font, dueStr, x + w - 8 - dueW, y + 7, dueColor, false);
+            int muted = 0xFF64748B;
+            gfx.text(font, newStr, newX, textY, deck.newCount > 0 ? ACCENT_SKY : muted, false);
+            gfx.text(font, learnStr, learnX, textY, deck.learnCount > 0 ? ACCENT_ROSE : muted, false);
+            gfx.text(font, revStr, revX, textY, deck.reviewCount > 0 ? ACCENT_EMERALD : muted, false);
+
+            gfx.pose().popMatrix();
         }
 
         @Override
         public void onClick(MouseButtonEvent event, boolean doubleClick) {
             cursorIndex = deckIndex;
             boolean hasChildren = decksWithChildren.contains(deck.name);
-            int indent = Math.min(4, deck.depth()) * 12;
-            int arrowEnd = getX() + 6 + indent + 13;
+            int indent = Math.min(4, deck.depth()) * 10;
+            int arrowEnd = getX() + 6 + indent + 11;
 
             if (hasChildren && event.x() <= arrowEnd) {
                 toggleCollapse(deck.name);

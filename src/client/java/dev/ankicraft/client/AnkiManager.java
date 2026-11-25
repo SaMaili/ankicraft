@@ -30,7 +30,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -47,6 +49,7 @@ public class AnkiManager {
     private final AudioPlayer audioPlayer;
 
     private final Deque<AnkiCard> cardQueue = new ArrayDeque<>();
+    private final Set<Long> answeredThisSession = ConcurrentHashMap.newKeySet();
     private List<AnkiDeck> decks = new ArrayList<>();
 
     private boolean ankiConnected = false;
@@ -80,7 +83,12 @@ public class AnkiManager {
             this.decks = new ArrayList<>(cache.decks);
         }
         if (!cache.cards.isEmpty()) {
-            List<AnkiCard> copy = new ArrayList<>(cache.cards);
+            List<AnkiCard> copy = new ArrayList<>();
+            for (AnkiCard c : cache.cards) {
+                if (matchesSelectedDecks(c.deckName)) {
+                    copy.add(c);
+                }
+            }
             Collections.shuffle(copy);
             cardQueue.addAll(copy);
         }
@@ -190,20 +198,36 @@ public class AnkiManager {
                     .thenCompose(fetchedDecks -> {
                         this.decks = new ArrayList<>(fetchedDecks);
                         cache.decks = new ArrayList<>(fetchedDecks);
-                        return ankiClient.fetchDueCards(config.selectedDecks, 60);
+                        List<AnkiDeck> studyDecks = getStudyDecks();
+                        if (currentStudyDeck != null && studyDecks.stream().noneMatch(d -> d.id == currentStudyDeck.id)) {
+                            currentStudyDeck = null;
+                        }
+                        DueSummary summary = getDueSummary();
+                        if (summary.total() == 0) {
+                            return CompletableFuture.completedFuture(List.<AnkiCard>of());
+                        }
+                        boolean includeNew = summary.newCount() > 0;
+                        int limit = Math.min(60, Math.max(1, summary.total()));
+                        return ankiClient.fetchDueCards(config.selectedDecks, includeNew, limit);
                     })
                     .thenCompose(fetchedCards -> ankiClient.fetchNextScheduledCard(getStudyDecks(), currentStudyDeck)
                             .thenApply(scheduled -> {
+                                List<AnkiCard> filtered = new ArrayList<>();
                                 for (AnkiCard card : fetchedCards) {
+                                    if (!matchesSelectedDecks(card.deckName) || answeredThisSession.contains(card.cardId)) {
+                                        continue;
+                                    }
                                     if (card.deckId == 0L) {
                                         card.deckId = resolveDeckId(card.deckName);
                                     }
+                                    filtered.add(card);
                                 }
-                                List<AnkiCard> shuffled = new ArrayList<>(fetchedCards);
+                                List<AnkiCard> shuffled = new ArrayList<>(filtered);
                                 Collections.shuffle(shuffled);
                                 synchronized (cardQueue) {
                                     cardQueue.clear();
-                                    if (scheduled != null && scheduled.card() != null) {
+                                    if (scheduled != null && scheduled.card() != null
+                                            && matchesSelectedDecks(scheduled.card().deckName)) {
                                         currentStudyDeck = scheduled.studyDeck();
                                         AnkiCard head = scheduled.card();
                                         if (head.deckId == 0L) {
@@ -214,7 +238,7 @@ public class AnkiManager {
                                     }
                                     cardQueue.addAll(shuffled);
                                 }
-                                cache.cards = new ArrayList<>(fetchedCards);
+                                cache.cards = new ArrayList<>(filtered);
                                 cache.lastSyncMs = System.currentTimeMillis();
                                 cache.save();
                                 syncing = false;
@@ -254,9 +278,37 @@ public class AnkiManager {
         });
     }
 
+    public void onDeckSelectionChanged() {
+        currentStudyDeck = null;
+        synchronized (cardQueue) {
+            cardQueue.removeIf(c -> !matchesSelectedDecks(c.deckName));
+        }
+    }
+
+    public boolean matchesSelectedDecks(String deckName) {
+        if (config.selectedDecks == null || config.selectedDecks.isEmpty()) {
+            return true;
+        }
+        if (deckName == null || deckName.isEmpty()) {
+            return false;
+        }
+        for (String sel : config.selectedDecks) {
+            if (deckName.equals(sel) || deckName.startsWith(sel + "::")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public AnkiCard pollNextCard() {
         synchronized (cardQueue) {
-            return cardQueue.pollFirst();
+            while (!cardQueue.isEmpty()) {
+                AnkiCard next = cardQueue.pollFirst();
+                if (next != null && matchesSelectedDecks(next.deckName)) {
+                    return next;
+                }
+            }
+            return null;
         }
     }
 
@@ -278,6 +330,7 @@ public class AnkiManager {
         this.streak = Math.max(0, previousStreak);
         this.reviewedToday = Math.max(0, previousReviewedToday);
         if (card != null) {
+            answeredThisSession.remove(card.cardId);
             synchronized (cache) {
                 cache.pendingReviews.removeIf(pr -> pr.cardId == card.cardId);
                 if (cache.cards.stream().noneMatch(c -> c.cardId == card.cardId)) {
@@ -294,8 +347,12 @@ public class AnkiManager {
 
         if (ease >= 3) {
             streak++;
+            answeredThisSession.add(card.cardId);
+        } else if (ease == 2) {
+            answeredThisSession.add(card.cardId);
         } else if (ease == 1) {
             streak = 0;
+            answeredThisSession.remove(card.cardId);
             requeueCard(card);
         }
 

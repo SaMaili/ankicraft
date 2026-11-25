@@ -173,6 +173,10 @@ public class AnkiConnectClient {
     }
 
     public CompletableFuture<List<AnkiCard>> fetchDueCards(List<String> selectedDecks, int limit) {
+        return fetchDueCards(selectedDecks, true, limit);
+    }
+
+    public CompletableFuture<List<AnkiCard>> fetchDueCards(List<String> selectedDecks, boolean includeNew, int limit) {
         StringBuilder query = new StringBuilder();
         if (selectedDecks != null && !selectedDecks.isEmpty()) {
             query.append("(");
@@ -183,7 +187,7 @@ public class AnkiConnectClient {
             }
             query.append(") ");
         }
-        query.append("(is:due OR is:new)");
+        query.append(includeNew ? "(is:due OR is:new)" : "is:due");
 
         JsonObject findParams = new JsonObject();
         findParams.addProperty("query", query.toString());
